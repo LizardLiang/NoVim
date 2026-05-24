@@ -18,7 +18,7 @@ Read web novels inside Neovim.
 
 ```lua
 {
-  'your-username/NoVim',
+  'LizardLiang/NoVim',
   dependencies = { 'nvim-lua/plenary.nvim' },
   config = function()
     require('novim').setup({
