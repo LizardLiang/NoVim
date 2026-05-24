@@ -19,31 +19,29 @@ local function render_toc()
   local lines = { HEADER, SEPARATOR }
   local line_map = {}
 
-  for gi, group in ipairs(state.toc) do
+  local function render_node(node, depth)
+    local has_children = #node.children > 0
+    local indent = string.rep('  ', depth)
     local icon
-    if group.is_leaf then
-      icon = '   '
-    elseif group.expanded then
+    if not has_children then
+      icon = (state.current_url and node.url == state.current_url) and ' ► ' or '   '
+    elseif node.expanded then
       icon = ' ▾ '
     else
       icon = ' ▸ '
     end
-
-    local gl = #lines + 1
-    table.insert(lines, icon .. group.title)
-    line_map[gl] = { type = group.is_leaf and 'leaf' or 'group', group_idx = gi }
-
-    if group.expanded and not group.is_leaf then
-      for ii, item in ipairs(group.children) do
-        local marker = '   '
-        if state.current_url and item.url == state.current_url then
-          marker = ' ► '
-        end
-        local il = #lines + 1
-        table.insert(lines, '    ' .. marker .. item.title)
-        line_map[il] = { type = 'subitem', group_idx = gi, item_idx = ii }
+    local lnum = #lines + 1
+    table.insert(lines, indent .. icon .. node.title)
+    line_map[lnum] = { node = node }
+    if has_children and node.expanded then
+      for _, child in ipairs(node.children) do
+        render_node(child, depth + 1)
       end
     end
+  end
+
+  for _, node in ipairs(state.toc) do
+    render_node(node, 0)
   end
 
   return lines, line_map
@@ -64,25 +62,26 @@ end
 
 local function handle_enter()
   local cursor_line = vim.api.nvim_win_get_cursor(state.sidebar_win)[1]
-  local item = state.line_map[cursor_line]
-  if not item then return end
-
-  if item.type == 'group' then
-    state.toc[item.group_idx].expanded = not state.toc[item.group_idx].expanded
+  local entry = state.line_map[cursor_line]
+  if not entry then return end
+  local node = entry.node
+  if #node.children > 0 then
+    node.expanded = not node.expanded
     M.refresh_highlight()
-  elseif item.type == 'leaf' then
-    local url = state.toc[item.group_idx].url
-    require('novim.reader').open(url)
-  elseif item.type == 'subitem' then
-    local url = state.toc[item.group_idx].children[item.item_idx].url
-    require('novim.reader').open(url)
+  elseif node.url then
+    require('novim.reader').open(node.url)
   end
 end
 
-local function handle_toggle(group_idx)
-  if not state.toc or not state.toc[group_idx] then return end
-  state.toc[group_idx].expanded = not state.toc[group_idx].expanded
-  M.refresh_highlight()
+local function handle_toggle_cursor()
+  local cursor_line = vim.api.nvim_win_get_cursor(state.sidebar_win)[1]
+  local entry = state.line_map[cursor_line]
+  if not entry then return end
+  local node = entry.node
+  if #node.children > 0 then
+    node.expanded = not node.expanded
+    M.refresh_highlight()
+  end
 end
 
 local function setup_keymaps(buf)
@@ -91,16 +90,8 @@ local function setup_keymaps(buf)
   end
 
   map('<CR>', handle_enter)
-  map('o', function()
-    local cursor_line = vim.api.nvim_win_get_cursor(state.sidebar_win)[1]
-    local item = state.line_map[cursor_line]
-    if item and item.type == 'group' then handle_toggle(item.group_idx) end
-  end)
-  map('<Tab>', function()
-    local cursor_line = vim.api.nvim_win_get_cursor(state.sidebar_win)[1]
-    local item = state.line_map[cursor_line]
-    if item and item.type == 'group' then handle_toggle(item.group_idx) end
-  end)
+  map('o', handle_toggle_cursor)
+  map('<Tab>', handle_toggle_cursor)
   map('q', function() M.close() end)
   map('r', function()
     state.toc = nil

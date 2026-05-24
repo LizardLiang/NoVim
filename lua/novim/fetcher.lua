@@ -160,56 +160,81 @@ function M.fetch_toc(source_url)
   end
 
   local host = parse_host(source_url)
-  local groups = {}
-  local group_map = {}
 
-  -- Sidebar links: <a href="..."><span class="label">Title</span>...</a>
-  -- Use block capture to get full <a> content, then extract title from span.label.
-  for href, inner in sidebar_html:gmatch('<a[^>]*href="([^"]+)"[^>]*>(.-)</a>') do
-    -- Title is in <span class="label">; fall back to plain text if absent
-    local title = inner:match('<span[^>]*class="label"[^>]*>([^<]+)<')
-               or inner:match('^%s*([^<\n]+)')
-    if title then
-      title = title:match('^%s*(.-)%s*$')
-    end
+  -- Parse sidebar HTML into a tree by tracking <ul>/<ul> nesting depth.
+  -- Each <ul> pushes the last-created node as the new parent; </ul> pops.
+  local root = { children = {} }
+  local stack = { root }   -- stack[#stack].children is the current insertion list
+  local last_node = nil    -- most recently created node; becomes parent on next <ul>
 
-    if href and title and title ~= '' then
-      if href:sub(1, 1) == '/' then href = host .. href end
+  local pos = 1
+  local slen = #sidebar_html
 
-      if href:match('/chapter%d+/index%.html$') then
-        local ch_id = href:match('chapter(%d+)')
-        local g = { title = title, url = href, children = {}, expanded = false }
-        table.insert(groups, g)
-        group_map[ch_id] = #groups
-      elseif href:match('/chapter%d+/%d+%.html$') then
-        local ch_id = href:match('chapter(%d+)')
-        local gi = ch_id and group_map[ch_id]
-        if gi then
-          table.insert(groups[gi].children, { title = title, url = href })
-        end
-      elseif href:match('/index%.html$') or href:match('/character%.html$') then
-        local seen = false
-        for _, g in ipairs(groups) do
-          if g.url == href then seen = true; break end
-        end
-        if not seen then
-          table.insert(groups, {
-            title = title,
-            url = href,
-            children = {},
-            expanded = false,
-            is_leaf = true,
-          })
-        end
+  while pos <= slen do
+    local ts = sidebar_html:find('<', pos, true)
+    if not ts then break end
+    local te = sidebar_html:find('>', ts, true)
+    if not te then break end
+
+    local tag = sidebar_html:sub(ts, te)
+
+    if tag:match('^<[Uu][Ll][%s>]') then
+      if last_node then
+        table.insert(stack, last_node)
+        last_node = nil
       end
+      pos = te + 1
+
+    elseif tag:match('^</[Uu][Ll]') then
+      if #stack > 1 then table.remove(stack) end
+      last_node = nil
+      pos = te + 1
+
+    elseif tag:match('^<[Aa][%s]') then
+      local href = tag:match('href="([^"]+)"') or tag:match("href='([^']+)'")
+      local after_open = sidebar_html:sub(te + 1)
+      local close_start, close_end = after_open:find('</[Aa]%s*>')
+      local inner = close_start and after_open:sub(1, close_start - 1) or ''
+
+      local title = inner:match('<span[^>]*class="label"[^>]*>([^<]+)<')
+                 or inner:match('^%s*([^<\n]+)')
+      if title then title = title:match('^%s*(.-)%s*$') end
+
+      if title and title ~= '' then
+        local url = href
+        if url then
+          url = url:match('^%s*(.-)%s*$')
+          if url == '#' or url == '' then url = nil end
+          if url and url:sub(1, 1) == '/' then url = host .. url end
+          if url and not url:match('^https?://') then url = nil end
+        end
+
+        local node = { title = title, url = url, children = {}, expanded = false }
+        table.insert(stack[#stack].children, node)
+        last_node = node
+      end
+
+      pos = close_end and (te + close_end + 1) or (te + 1)
+
+    else
+      pos = te + 1
     end
   end
 
-  if #groups == 0 then
+  -- Derive is_leaf: true when a node has no children
+  local function mark_leaves(nodes)
+    for _, node in ipairs(nodes) do
+      node.is_leaf = (#node.children == 0)
+      mark_leaves(node.children)
+    end
+  end
+  mark_leaves(root.children)
+
+  if #root.children == 0 then
     return nil, '[NoVim] No chapters found. Check the URL points to a supported page.'
   end
 
-  return groups, nil
+  return root.children, nil
 end
 
 return M
