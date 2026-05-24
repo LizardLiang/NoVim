@@ -158,13 +158,19 @@ function M.fetch_toc(source_url)
   local groups = {}
   local group_map = {}
 
-  -- Match every <a href="...">Title</a> in the sidebar
-  for href, title in sidebar_html:gmatch('href="([^"]+)"[^>]*>([^<\n]+)') do
-    -- Make relative hrefs absolute
-    if href:sub(1, 1) == '/' then href = host .. href end
-    title = title:match('^%s*(.-)%s*$')
+  -- Sidebar links: <a href="..."><span class="label">Title</span>...</a>
+  -- Use block capture to get full <a> content, then extract title from span.label.
+  for href, inner in sidebar_html:gmatch('<a[^>]*href="([^"]+)"[^>]*>(.-)</a>') do
+    -- Title is in <span class="label">; fall back to plain text if absent
+    local title = inner:match('<span[^>]*class="label"[^>]*>([^<]+)<')
+               or inner:match('^%s*([^<\n]+)')
+    if title then
+      title = title:match('^%s*(.-)%s*$')
+    end
 
-    if title ~= '' then
+    if href and title and title ~= '' then
+      if href:sub(1, 1) == '/' then href = host .. href end
+
       if href:match('/chapter%d+/index%.html$') then
         local ch_id = href:match('chapter(%d+)')
         local g = { title = title, url = href, children = {}, expanded = false }
@@ -177,8 +183,6 @@ function M.fetch_toc(source_url)
           table.insert(groups[gi].children, { title = title, url = href })
         end
       elseif href:match('/index%.html$') or href:match('/character%.html$') then
-        -- Front matter pages (cover, character list, etc.)
-        -- De-duplicate: skip if already added
         local seen = false
         for _, g in ipairs(groups) do
           if g.url == href then seen = true; break end
