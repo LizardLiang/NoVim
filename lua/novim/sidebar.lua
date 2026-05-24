@@ -131,16 +131,17 @@ function M.load_toc()
         vim.notify('[NoVim] No URL provided. Run :NoVim to try again.', vim.log.levels.WARN)
         return
       end
-      url = url:match('^%s*(.-)%s*$')
       settings.set_source_url(url)
-      vim.notify('[NoVim] URL saved. Loading...', vim.log.levels.INFO)
-      M.load_toc()
+      -- Schedule back onto main loop in case vim.ui.input callback is async
+      vim.schedule(function()
+        vim.notify('[NoVim] URL saved. Loading...', vim.log.levels.INFO)
+        M.load_toc()
+      end)
     end)
     return
   end
 
   state.toc_loading = true
-  vim.notify('[NoVim] Loading chapters...', vim.log.levels.INFO)
 
   local fetcher = require('novim.fetcher')
   local toc, err = fetcher.fetch_toc(source_url)
@@ -148,10 +149,15 @@ function M.load_toc()
 
   if err then
     vim.notify(err, vim.log.levels.ERROR)
+    -- Clear loading indicator
+    if is_valid_sidebar() then
+      set_buf_lines(state.sidebar_buf, { HEADER, SEPARATOR, ' (error — press r to retry)' })
+    end
     return
   end
 
   state.toc = toc
+  vim.notify(string.format('[NoVim] Loaded %d chapter groups.', #toc), vim.log.levels.INFO)
   M.refresh_highlight()
 end
 

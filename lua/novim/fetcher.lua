@@ -3,7 +3,11 @@ local M = {}
 local function http_get(url)
   local ok, curl = pcall(require, 'plenary.curl')
   if ok then
-    local res = curl.get(url, { timeout = 10000 })
+    local res = curl.get(url, {
+      timeout = 10000,
+      follow = true,        -- follow redirects (e.g. /ch → /ch/index.html)
+      raw = { '-L' },       -- belt-and-suspenders for older plenary versions
+    })
     if res and res.status == 200 then
       return res.body, nil
     end
@@ -21,6 +25,17 @@ local function http_get(url)
     return nil, '[NoVim] Failed to fetch page. Check connection.'
   end
   return body, nil
+end
+
+-- Normalise a user-supplied URL so it reliably resolves to an HTML page.
+-- Strips trailing slash and appends /index.html when no file extension present.
+local function normalise_url(url)
+  url = url:match('^%s*(.-)%s*$') -- trim whitespace
+  url = url:gsub('/$', '')        -- remove trailing slash
+  if not url:match('%.[a-zA-Z]+$') then
+    url = url .. '/index.html'
+  end
+  return url
 end
 
 local function strip_html(s)
@@ -130,42 +145,48 @@ function M.fetch_chapter(url)
 end
 
 function M.fetch_toc(source_url)
+  source_url = normalise_url(source_url)
   local html, err = http_get(source_url)
   if not html then return nil, err end
 
   local sidebar_html = extract_between(html, 'sidebar', 'article')
   if not sidebar_html then
-    return nil, '[NoVim] Could not find chapter list on provided page.'
+    return nil, '[NoVim] Could not find chapter list on this page. Try a direct chapter URL.'
   end
 
   local host = parse_host(source_url)
-  local base_path = parse_base_path(source_url)
   local groups = {}
   local group_map = {}
 
-  for href, title in sidebar_html:gmatch('href="(/[^"]+)"[^>]*>([^<\n]+)') do
-    -- Only process hrefs under the same base path
-    if href:sub(1, #base_path) ~= base_path then
-      -- skip links outside the reading section
-    else
-      local full_url = host .. href
-      title = title:match('^%s*(.-)%s*$')
-      if title ~= '' then
-        if href:match('/chapter%d+/index%.html$') then
-          local ch_id = href:match('chapter(%d+)')
-          local g = { title = title, url = full_url, children = {}, expanded = false }
-          table.insert(groups, g)
-          group_map[ch_id] = #groups
-        elseif href:match('/chapter%d+/%d+%.html$') then
-          local ch_id = href:match('chapter(%d+)')
-          local gi = ch_id and group_map[ch_id]
-          if gi then
-            table.insert(groups[gi].children, { title = title, url = full_url })
-          end
-        elseif href:match('/index%.html$') or href:match('/character%.html$') then
+  -- Match every <a href="...">Title</a> in the sidebar
+  for href, title in sidebar_html:gmatch('href="([^"]+)"[^>]*>([^<\n]+)') do
+    -- Make relative hrefs absolute
+    if href:sub(1, 1) == '/' then href = host .. href end
+    title = title:match('^%s*(.-)%s*$')
+
+    if title ~= '' then
+      if href:match('/chapter%d+/index%.html$') then
+        local ch_id = href:match('chapter(%d+)')
+        local g = { title = title, url = href, children = {}, expanded = false }
+        table.insert(groups, g)
+        group_map[ch_id] = #groups
+      elseif href:match('/chapter%d+/%d+%.html$') then
+        local ch_id = href:match('chapter(%d+)')
+        local gi = ch_id and group_map[ch_id]
+        if gi then
+          table.insert(groups[gi].children, { title = title, url = href })
+        end
+      elseif href:match('/index%.html$') or href:match('/character%.html$') then
+        -- Front matter pages (cover, character list, etc.)
+        -- De-duplicate: skip if already added
+        local seen = false
+        for _, g in ipairs(groups) do
+          if g.url == href then seen = true; break end
+        end
+        if not seen then
           table.insert(groups, {
             title = title,
-            url = full_url,
+            url = href,
             children = {},
             expanded = false,
             is_leaf = true,
@@ -173,6 +194,10 @@ function M.fetch_toc(source_url)
         end
       end
     end
+  end
+
+  if #groups == 0 then
+    return nil, '[NoVim] No chapters found. Check the URL points to a supported page.'
   end
 
   return groups, nil
