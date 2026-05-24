@@ -59,8 +59,10 @@ local function strip_html(s)
     if code and code < 128 then return string.char(code) end
     return ''
   end)
+  -- Remove incomplete tags at end of string (extract_between can cut mid-tag)
+  s = s:gsub('<[%a][^>]*$', '')
   s = s:gsub('\r\n', '\n'):gsub('\r', '\n')
-  s = s:gsub('\n[ \t]*\n[ \t]*\n+', '\n\n')
+  s = s:gsub('(\n[ \t]*)+\n', '\n\n')
   local lines = {}
   for line in (s .. '\n'):gmatch('([^\n]*)\n') do
     table.insert(lines, line:match('^%s*(.-)%s*$'))
@@ -114,6 +116,9 @@ function M.fetch_chapter(url)
   if not content_html then
     return nil, nil, nil, '[NoVim] Could not find content on page.'
   end
+
+  -- Remove chapter navigation anchor links (prev/next buttons) before stripping
+  content_html = content_html:gsub('<a[^>]*href="[^"]-chapter%d+/%d+%.html"[^>]*>[^<]*</a>', '')
 
   local text = strip_html(content_html)
   -- Remove inline "edit this page" links (site-specific artifact)
