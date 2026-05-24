@@ -107,15 +107,37 @@ local function setup_keymaps(buf)
     state.toc_loading = false
     M.load_toc()
   end)
+  map('u', function() M.edit_url() end)
   map('?', function()
     vim.notify(
       '[NoVim] Sidebar keys:\n'
         .. '  <Enter>  open / toggle expand\n'
         .. '  o / <Tab>  toggle expand\n'
         .. '  q  close sidebar\n'
-        .. '  r  refresh chapter list',
+        .. '  r  refresh chapter list\n'
+        .. '  u  change source URL',
       vim.log.levels.INFO
     )
+  end)
+end
+
+function M.edit_url()
+  local settings = require('novim.settings')
+  local current = settings.get_source_url() or ''
+  vim.ui.input({ prompt = '[NoVim] Source URL: ', default = current }, function(url)
+    if not url then return end -- cancelled
+    url = url:match('^%s*(.-)%s*$')
+    if url == '' then
+      vim.notify('[NoVim] URL unchanged.', vim.log.levels.INFO)
+      return
+    end
+    settings.set_source_url(url)
+    state.toc = nil
+    state.toc_loading = false
+    vim.schedule(function()
+      vim.notify('[NoVim] URL updated. Reloading...', vim.log.levels.INFO)
+      M.load_toc()
+    end)
   end)
 end
 
