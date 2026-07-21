@@ -360,6 +360,74 @@ do
 end
 
 ----------------------------------------------------------------------
+-- config.lua NOVIM_DATA_DIR: env-relocatable data dir (progress + settings)
+----------------------------------------------------------------------
+local settings = require('novim.settings')
+
+local function with_env_data_dir(value, fn)
+  local prev = vim.env.NOVIM_DATA_DIR
+  vim.env.NOVIM_DATA_DIR = value
+  local ok, err = pcall(fn)
+  vim.env.NOVIM_DATA_DIR = prev
+  config.setup({}) -- restore options resolved without the test env var
+  if not ok then error(err, 0) end
+end
+
+do
+  local dir = vim.fn.tempname() .. '_novim_data_dir'
+  with_env_data_dir(dir, function()
+    config.setup({})
+    eq(config.options.save_path, dir .. '/novim_progress.json',
+      'NOVIM_DATA_DIR relocates the progress file into the env directory')
+    eq(config.options.data_dir, dir, 'NOVIM_DATA_DIR is exposed as options.data_dir')
+    truthy(vim.fn.isdirectory(dir) == 1, 'NOVIM_DATA_DIR directory is created when missing')
+
+    settings.set_source_url('https://czbooks.net/n/ui5on5')
+    local f = io.open(dir .. '/novim_settings.json', 'r')
+    truthy(f ~= nil, 'settings file is written inside NOVIM_DATA_DIR')
+    if f then f:close() end
+    eq(settings.get_source_url(), 'https://czbooks.net/n/ui5on5',
+      'source_url round-trips through the relocated settings file')
+    config.options.source_url = nil
+  end)
+  vim.fn.delete(dir, 'rf')
+end
+
+do
+  local dir = vim.fn.tempname() .. '_novim_data_dir_prec'
+  with_env_data_dir(dir, function()
+    config.setup({ save_path = '/explicit/opt/path.json' })
+    eq(config.options.save_path, dir .. '/novim_progress.json',
+      'NOVIM_DATA_DIR wins over an explicit setup({save_path}) opt')
+  end)
+  vim.fn.delete(dir, 'rf')
+end
+
+do
+  with_env_data_dir(nil, function()
+    config.setup({})
+    eq(config.options.save_path, vim.fn.stdpath('data') .. '/novim_progress.json',
+      'without NOVIM_DATA_DIR the default stdpath progress location is unchanged')
+    config.setup({ save_path = '/explicit/opt/path.json' })
+    eq(config.options.save_path, '/explicit/opt/path.json',
+      'without NOVIM_DATA_DIR an explicit setup({save_path}) still wins')
+  end)
+end
+
+do
+  -- A file occupying the target path makes the dir uncreatable.
+  local blocker = vim.fn.tempname() .. '_novim_blocker'
+  write_file(blocker, 'x')
+  with_env_data_dir(blocker, function()
+    local ok = pcall(config.setup, {})
+    truthy(ok, 'setup does not throw when NOVIM_DATA_DIR is uncreatable')
+    eq(config.options.save_path, vim.fn.stdpath('data') .. '/novim_progress.json',
+      'uncreatable NOVIM_DATA_DIR falls back to the default progress location')
+  end)
+  os.remove(blocker)
+end
+
+----------------------------------------------------------------------
 print(string.format('\n%d checks, %d failures', checks, failures))
 if failures > 0 then
   os.exit(1)

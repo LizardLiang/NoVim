@@ -3,7 +3,8 @@ local M = {}
 local config = require('novim.config')
 
 local function path()
-  return vim.fn.stdpath('data') .. '/novim_settings.json'
+  local dir = config.options.data_dir or vim.fn.stdpath('data')
+  return dir .. '/novim_settings.json'
 end
 
 local function load_raw()

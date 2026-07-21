@@ -105,6 +105,35 @@ Position is saved per novel automatically to
 or exit Neovim. On next `:NoVim`, you will be prompted to resume the
 most recently read novel at its saved chapter and line number.
 
+### Syncing across devices
+
+Set the `NOVIM_DATA_DIR` environment variable to relocate all persisted
+state — reading progress (`novim_progress.json`) and settings
+(`novim_settings.json`, the saved source URL) — into a directory of your
+choice, e.g. a OneDrive folder so progress follows you across machines:
+
+```powershell
+# Windows (persistent, takes effect in new sessions)
+setx NOVIM_DATA_DIR "$env:OneDrive\novim"
+```
+
+```sh
+# Linux / macOS (add to your shell profile)
+export NOVIM_DATA_DIR="$HOME/OneDrive/novim"
+```
+
+Precedence: `NOVIM_DATA_DIR` > `setup({ save_path = ... })` > the
+`stdpath('data')` default. The directory is created if missing; if it can't
+be created, NoVim warns and falls back to the default location. `~` is
+expanded.
+
+To carry over existing local state, copy the two JSON files from
+`stdpath('data')` (`:echo stdpath('data')`) into the new directory once.
+
+Caveat: sync is whole-file last-write-wins. Reading on two devices at the
+same time can lose the older device's latest position for a novel; each
+novel has its own slot, so other novels are unaffected.
+
 ## Windows note
 
 On Windows, plenary.nvim uses system `curl.exe`. Ensure `curl` is available
