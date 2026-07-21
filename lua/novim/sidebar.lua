@@ -157,8 +157,19 @@ function M.load_toc()
   state.toc_loading = true
 
   local fetcher = require('novim.fetcher')
-  local toc, err = fetcher.fetch_toc(source_url)
+  -- pcall so a fetch-path error (e.g. an adapter or header-merge bug that
+  -- throws instead of returning `nil, err`) can't leave toc_loading stuck
+  -- true and permanently block future r/reload attempts.
+  local ok, toc, err = pcall(fetcher.fetch_toc, source_url)
   state.toc_loading = false
+
+  if not ok then
+    vim.notify('[NoVim] ' .. tostring(toc), vim.log.levels.ERROR)
+    if is_valid_sidebar() then
+      set_buf_lines(state.sidebar_buf, { HEADER, SEPARATOR, ' (error — press r to retry)' })
+    end
+    return
+  end
 
   if err then
     vim.notify(err, vim.log.levels.ERROR)
@@ -172,6 +183,19 @@ function M.load_toc()
   state.toc = toc
   vim.notify(string.format('[NoVim] Loaded %d chapter groups.', #toc), vim.log.levels.INFO)
   M.refresh_highlight()
+
+  -- If the pasted source_url names a specific chapter and nothing has
+  -- been saved for this novel yet, open that chapter now.
+  local sites = require('novim.sites')
+  local adapter = sites.resolve(source_url)
+  local entry_chapter = adapter.entry_chapter(source_url)
+  if entry_chapter and not state.current_url then
+    local progress = require('novim.progress')
+    local key = adapter.novel_key(source_url)
+    if not progress.load(key) then
+      require('novim.reader').open(source_url)
+    end
+  end
 end
 
 function M.open()

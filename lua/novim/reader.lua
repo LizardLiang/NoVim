@@ -4,15 +4,6 @@ local config = require('novim.config')
 local state = require('novim.state')
 local progress = require('novim.progress')
 
-local function url_to_bufname(url)
-  local ch, sec = url:match('chapter(%d+)/(%d+)%.html$')
-  if ch and sec then
-    return 'novim://chapter' .. ch .. '/' .. sec
-  end
-  local path = url:match('/ch/(.-)%.html$') or url:match('/ch/(.+)$') or 'unknown'
-  return 'novim://' .. path
-end
-
 local function find_main_win()
   local sidebar_win = state.sidebar_win
   for _, win in ipairs(vim.api.nvim_list_wins()) do
@@ -58,19 +49,21 @@ end
 
 function M.open(url)
   local fetcher = require('novim.fetcher')
+  local sites = require('novim.sites')
   vim.notify('[NoVim] Loading...', vim.log.levels.INFO)
 
-  local lines, prev_url, next_url, err = fetcher.fetch_chapter(url)
+  local lines, prev_url, next_url, title, err = fetcher.fetch_chapter(url)
   if err then
     vim.notify(err, vim.log.levels.ERROR)
     return
   end
 
   state.current_url = url
+  state.chapter_title = title
   state.prev_url = prev_url
   state.next_url = next_url
 
-  local bufname = url_to_bufname(url)
+  local bufname = sites.resolve(url).bufname(url)
   local buf = vim.fn.bufnr(bufname, false)
 
   if buf == -1 then

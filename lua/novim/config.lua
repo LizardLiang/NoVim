@@ -4,6 +4,7 @@ M.defaults = {
   sidebar_width = 40,
   save_path = nil,
   source_url = nil,  -- set by user or prompted on first run; persisted to disk
+  http_headers = {}, -- override/add outbound request headers (see fetcher.lua defaults)
   keymaps = {
     next_chapter = ']c',
     prev_chapter = '[c',

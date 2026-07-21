@@ -1,12 +1,100 @@
+-- Shared HTTP + HTML plumbing used by site adapters (lua/novim/sites/*).
+-- Site-specific parsing lives in the adapters; this module only fetches
+-- pages and exposes helpers the adapters need.
 local M = {}
 
-local function http_get(url)
+local config = require('novim.config')
+
+local DEFAULT_HEADERS = {
+  ['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    .. '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  ['Accept-Language'] = 'zh-TW,zh;q=0.9,en;q=0.8',
+}
+
+-- Extract the bare hostname from a URL (e.g. "example.com"), no scheme.
+-- Centralised here so adapters don't each re-implement it (was previously
+-- duplicated in sites/czbooks.lua and sites/legacy.lua).
+function M.bare_host(url)
+  return url:match('^https?://([^/]+)') or url
+end
+
+-- Merge any number of header tables by case-insensitive name, later
+-- tables taking priority. The winning entry's own key casing is kept on
+-- the wire, so `['user-agent'] = ...` fully replaces
+-- DEFAULT_HEADERS['User-Agent'] instead of riding alongside it as a
+-- second, conflicting header. Values that aren't string/number are
+-- dropped with a warning rather than left to crash the curl-fallback
+-- path's string concatenation later.
+local function merge_headers_ci(...)
+  local merged = {} -- lower(name) -> { name = original-case name, value = value }
+  for _, tbl in ipairs({ ... }) do
+    for name, value in pairs(tbl or {}) do
+      if type(value) == 'string' or type(value) == 'number' then
+        merged[name:lower()] = { name = name, value = value }
+      else
+        vim.notify(
+          string.format('[NoVim] Ignoring http_headers[%s]: value must be a string or number.', tostring(name)),
+          vim.log.levels.WARN
+        )
+      end
+    end
+  end
+  local result = {}
+  for _, entry in pairs(merged) do
+    result[entry.name] = entry.value
+  end
+  return result
+end
+
+-- config.options.http_headers may be either:
+--   * a flat header table applied to every request (legacy/default form), or
+--   * a host-keyed table `{ ['some.host'] = { headers... } }` that scopes
+--     headers to just that host, so a Cookie/Authorization header aimed at
+--     one site doesn't ride along to every other host (or redirect target
+--     on the *initial* request's host is looked up; curl/plenary still
+--     forward manually-supplied headers across redirects to a different
+--     host, which host-scoping here cannot prevent).
+-- Detected by shape: if every value is itself a table, treat it as
+-- host-keyed; an empty table is treated as flat (nothing to scope).
+local function is_host_keyed(headers)
+  if not headers or next(headers) == nil then return false end
+  for _, value in pairs(headers) do
+    if type(value) ~= 'table' then return false end
+  end
+  return true
+end
+
+local function headers_for_host(url)
+  local configured = config.options.http_headers or {}
+  if not is_host_keyed(configured) then
+    return configured
+  end
+  local bare = M.bare_host(url)
+  return configured[bare] or {}
+end
+
+-- Merge default headers, the (possibly host-scoped) user
+-- config.options.http_headers, and any per-call extra headers (highest
+-- priority last).
+local function merged_headers(url, extra_headers)
+  return merge_headers_ci(DEFAULT_HEADERS, headers_for_host(url), extra_headers or {})
+end
+
+-- Exposed for tests (and debugging): the exact header table `http_get`
+-- would send for `url` given the current config.options.http_headers,
+-- without performing a request.
+M.resolve_headers = merged_headers
+
+function M.http_get(url, extra_headers)
+  local headers = merged_headers(url, extra_headers)
+
   local ok, curl = pcall(require, 'plenary.curl')
   if ok then
     local res = curl.get(url, {
       timeout = 10000,
       follow = true,        -- follow redirects (e.g. /ch → /ch/index.html)
       raw = { '-L' },       -- belt-and-suspenders for older plenary versions
+      headers = headers,
     })
     if res and res.status == 200 then
       return res.body, nil
@@ -18,27 +106,38 @@ local function http_get(url)
     return nil, '[NoVim] Failed to fetch page. Check connection. (status: ' .. status .. ')'
   end
 
-  -- Fallback: system curl
-  local cmd = string.format('curl -sL --max-time 10 "%s"', url)
-  local body = vim.fn.system(cmd)
+  -- Fallback: system curl. Build the argument list (rather than
+  -- string-formatting one shell command) so headers/quoting survive on
+  -- Windows, where vim.fn.system(table) execs without a shell.
+  local args = { 'curl', '-sL', '--max-time', '10' }
+  for name, value in pairs(headers) do
+    table.insert(args, '-H')
+    table.insert(args, name .. ': ' .. value)
+  end
+  table.insert(args, url)
+
+  local body = vim.fn.system(args)
   if vim.v.shell_error ~= 0 then
     return nil, '[NoVim] Failed to fetch page. Check connection.'
   end
   return body, nil
 end
 
--- Normalise a user-supplied URL so it reliably resolves to an HTML page.
--- Strips trailing slash and appends /index.html when no file extension present.
-local function normalise_url(url)
-  url = url:match('^%s*(.-)%s*$') -- trim whitespace
-  url = url:gsub('/$', '')        -- remove trailing slash
-  if not url:match('%.[a-zA-Z]+$') then
-    url = url .. '/index.html'
+-- Split `text` on '\n' into a lines table. Shared so adapters that need to
+-- post-process stripped text (e.g. legacy's edit-link removal) before
+-- re-splitting don't each hand-roll the same gmatch loop.
+function M.lines_from(text)
+  local lines = {}
+  for line in (text .. '\n'):gmatch('([^\n]*)\n') do
+    table.insert(lines, line)
   end
-  return url
+  return lines
 end
 
-local function strip_html(s)
+-- Strip tags/entities from `s` and return the result as a lines table
+-- directly, skipping the join-then-resplit both site adapters used to do
+-- on strip_html's string return value.
+function M.strip_html_lines(s)
   s = s:gsub('<[Ss][Cc][Rr][Ii][Pp][Tt][^>]*>.-</%s*[Ss][Cc][Rr][Ii][Pp][Tt]%s*>', '')
   s = s:gsub('<[Ss][Tt][Yy][Ll][Ee][^>]*>.-</%s*[Ss][Tt][Yy][Ll][Ee]%s*>', '')
   s = s:gsub('<[Bb][Rr][^>]*/?>', '\n')
@@ -63,16 +162,20 @@ local function strip_html(s)
   s = s:gsub('<[%a][^>]*$', '')
   s = s:gsub('\r\n', '\n'):gsub('\r', '\n')
   s = s:gsub('(\n[ \t]*)+\n', '\n\n')
-  local lines = {}
-  for line in (s .. '\n'):gmatch('([^\n]*)\n') do
-    table.insert(lines, line:match('^%s*(.-)%s*$'))
+  local lines = M.lines_from(s)
+  for i, line in ipairs(lines) do
+    lines[i] = line:match('^%s*(.-)%s*$')
   end
   while lines[1] == '' do table.remove(lines, 1) end
   while lines[#lines] == '' do table.remove(lines) end
-  return table.concat(lines, '\n')
+  return lines
 end
 
-local function extract_between(html, start_id, end_id)
+function M.strip_html(s)
+  return table.concat(M.strip_html_lines(s), '\n')
+end
+
+function M.extract_between(html, start_id, end_id)
   local s = html:find('id="' .. start_id .. '"', 1, true)
          or html:find("id='" .. start_id .. "'", 1, true)
   if not s then return nil end
@@ -88,153 +191,45 @@ local function extract_between(html, start_id, end_id)
 end
 
 -- Extract scheme + host from a URL (e.g. "https://example.com")
-local function parse_host(url)
+function M.parse_host(url)
   return url:match('^(https?://[^/]+)') or ''
 end
 
--- Extract the base path shared by chapter URLs
--- e.g. https://example.com/book/ch/chapter060/43.html → /book/ch/
-local function parse_base_path(url)
-  local path = url:match('^https?://[^/]+(/.*)')  or '/'
-  -- Walk up to the parent of any chapter\d+ segment
-  local base = path:match('^(.*/)chapter%d+/')
-  return base or path:match('^(.*/)') or '/'
-end
-
--- Make a relative href absolute using the source URL's host
-local function make_absolute(href, host)
+-- Make a relative or protocol-relative href absolute using the source
+-- URL's scheme + host (e.g. "https://example.com").
+function M.make_absolute(href, host)
   if href:match('^https?://') then return href end
+  if href:match('^//') then
+    local scheme = host:match('^(https?):') or 'https'
+    return scheme .. ':' .. href
+  end
   if href:sub(1, 1) == '/' then return host .. href end
   return href
 end
 
+-- Resolve the URL to a site adapter, fetch its chapter page and delegate
+-- parsing to the adapter.
 function M.fetch_chapter(url)
-  local html, err = http_get(url)
-  if not html then return nil, nil, nil, err end
+  local sites = require('novim.sites')
+  local adapter = sites.resolve(url)
 
-  local content_html = extract_between(html, 'content_wrapper', 'toc')
-  if not content_html then
-    return nil, nil, nil, '[NoVim] Could not find content on page.'
-  end
+  local html, err = M.http_get(url)
+  if not html then return nil, nil, nil, nil, err end
 
-  -- Remove chapter navigation anchor links (prev/next buttons) before stripping
-  content_html = content_html:gsub('<a[^>]*href="[^"]-chapter%d+/%d+%.html"[^>]*>[^<]*</a>', '')
-
-  local text = strip_html(content_html)
-  -- Remove inline "edit this page" links (site-specific artifact)
-  text = text:gsub('\n?编辑本文\n?', '\n')
-  text = text:match('^%s*(.-)%s*$') or ''
-
-  local lines = {}
-  for line in (text .. '\n'):gmatch('([^\n]*)\n') do
-    table.insert(lines, line)
-  end
-
-  -- Extract prev/next chapter links from article nav
-  local host = parse_host(url)
-  local base_path = parse_base_path(url)
-  local prev_url, next_url
-  local art_html = extract_between(html, 'article', '/body')
-  if art_html then
-    local count = 0
-    for href in art_html:gmatch('href="([^"]-chapter%d+/%d+%.html)"') do
-      href = make_absolute(href, host)
-      count = count + 1
-      if count == 1 then prev_url = href
-      elseif count == 2 then next_url = href; break
-      end
-    end
-  end
-
-  return lines, prev_url, next_url, nil
+  return adapter.parse_chapter(html, url)
 end
 
+-- Resolve the URL to a site adapter, fetch its TOC/index page and delegate
+-- parsing to the adapter.
 function M.fetch_toc(source_url)
-  source_url = normalise_url(source_url)
-  local html, err = http_get(source_url)
+  local sites = require('novim.sites')
+  local adapter = sites.resolve(source_url)
+  local index_url = adapter.normalise_url(source_url)
+
+  local html, err = M.http_get(index_url)
   if not html then return nil, err end
 
-  local sidebar_html = extract_between(html, 'sidebar', 'article')
-  if not sidebar_html then
-    return nil, '[NoVim] Could not find chapter list on this page. Try a direct chapter URL.'
-  end
-
-  local host = parse_host(source_url)
-
-  -- Parse sidebar HTML into a tree by tracking <ul>/<ul> nesting depth.
-  -- Each <ul> pushes the last-created node as the new parent; </ul> pops.
-  local root = { children = {} }
-  local stack = { root }   -- stack[#stack].children is the current insertion list
-  local last_node = nil    -- most recently created node; becomes parent on next <ul>
-
-  local pos = 1
-  local slen = #sidebar_html
-
-  while pos <= slen do
-    local ts = sidebar_html:find('<', pos, true)
-    if not ts then break end
-    local te = sidebar_html:find('>', ts, true)
-    if not te then break end
-
-    local tag = sidebar_html:sub(ts, te)
-
-    if tag:match('^<[Uu][Ll][%s>]') then
-      if last_node then
-        table.insert(stack, last_node)
-        last_node = nil
-      end
-      pos = te + 1
-
-    elseif tag:match('^</[Uu][Ll]') then
-      if #stack > 1 then table.remove(stack) end
-      last_node = nil
-      pos = te + 1
-
-    elseif tag:match('^<[Aa][%s]') then
-      local href = tag:match('href="([^"]+)"') or tag:match("href='([^']+)'")
-      local after_open = sidebar_html:sub(te + 1)
-      local close_start, close_end = after_open:find('</[Aa]%s*>')
-      local inner = close_start and after_open:sub(1, close_start - 1) or ''
-
-      local title = inner:match('<span[^>]*class="label"[^>]*>([^<]+)<')
-                 or inner:match('^%s*([^<\n]+)')
-      if title then title = title:match('^%s*(.-)%s*$') end
-
-      if title and title ~= '' then
-        local url = href
-        if url then
-          url = url:match('^%s*(.-)%s*$')
-          if url == '#' or url == '' then url = nil end
-          if url and url:sub(1, 1) == '/' then url = host .. url end
-          if url and not url:match('^https?://') then url = nil end
-        end
-
-        local node = { title = title, url = url, children = {}, expanded = false }
-        table.insert(stack[#stack].children, node)
-        last_node = node
-      end
-
-      pos = close_end and (te + close_end + 1) or (te + 1)
-
-    else
-      pos = te + 1
-    end
-  end
-
-  -- Derive is_leaf: true when a node has no children
-  local function mark_leaves(nodes)
-    for _, node in ipairs(nodes) do
-      node.is_leaf = (#node.children == 0)
-      mark_leaves(node.children)
-    end
-  end
-  mark_leaves(root.children)
-
-  if #root.children == 0 then
-    return nil, '[NoVim] No chapters found. Check the URL points to a supported page.'
-  end
-
-  return root.children, nil
+  return adapter.parse_toc(html, index_url)
 end
 
 return M

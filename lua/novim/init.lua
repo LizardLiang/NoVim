@@ -34,11 +34,28 @@ end
 function M.toggle()
   local sidebar = require('novim.sidebar')
   local progress = require('novim.progress')
+  local settings = require('novim.settings')
+  local sites = require('novim.sites')
 
-  local saved = progress.load()
+  -- Resolve the saved position for the novel the configured source_url
+  -- actually points at, not just whatever was last read anywhere. Without
+  -- this, switching source_url to a different novel (via :NoVimUrl) and
+  -- restarting could offer to resume the OLD novel's position while the
+  -- sidebar/TOC that opens afterward loads the NEW novel — two different
+  -- novels shown at once. Only fall back to "last read anywhere" when no
+  -- source_url is configured at all.
+  local source_url = settings.get_source_url()
+  local saved
+  if source_url and source_url ~= '' then
+    local key = sites.resolve(source_url).novel_key(source_url)
+    saved = progress.load(key)
+  else
+    saved = progress.load()
+  end
+
   if saved and not state.current_url then
-    local title = saved.url:match('chapter(%d+/%d+)%.html$') or saved.url
-    local prompt = string.format('[NoVim] Resume at chapter %s (line %d)? [y/n] ', title, saved.line or 1)
+    local label = sites.resolve(saved.url).label(saved.url)
+    local prompt = string.format('[NoVim] Resume at %s (line %d)? [y/n] ', label, saved.line or 1)
     local choice = vim.fn.input(prompt)
     if choice:lower() == 'y' then
       sidebar.open()
@@ -64,11 +81,9 @@ end
 
 function M.statusline()
   if not state.current_url then return '' end
-  local ch, sec = state.current_url:match('chapter(%d+)/(%d+)%.html$')
-  if ch and sec then
-    return string.format('Ch.%s / %s', ch, sec)
-  end
-  return ''
+  local sites = require('novim.sites')
+  local adapter = sites.resolve(state.current_url)
+  return adapter.statusline(state.current_url, state.chapter_title) or ''
 end
 
 return M

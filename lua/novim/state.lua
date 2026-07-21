@@ -6,6 +6,7 @@ return {
   toc_loading = false,
   line_map = {},
   current_url = nil,
+  chapter_title = nil,
   prev_url = nil,
   next_url = nil,
   reader_buf = nil,
