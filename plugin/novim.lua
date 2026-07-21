@@ -22,7 +22,8 @@ vim.api.nvim_create_user_command('NoVim', function()
   require('novim').toggle()
 end, { desc = 'Toggle NoVim reader sidebar' })
 
--- Register :NoVimUrl command — edit saved source URL from anywhere
-vim.api.nvim_create_user_command('NoVimUrl', function()
-  require('novim.sidebar').edit_url()
-end, { desc = 'Edit NoVim source URL' })
+-- Register :NoVimUrl command — edit saved source URL from anywhere.
+-- Takes an optional URL; without one, prompts with the current value.
+vim.api.nvim_create_user_command('NoVimUrl', function(opts)
+  require('novim.sidebar').edit_url(opts.args ~= '' and opts.args or nil)
+end, { nargs = '?', desc = 'Edit NoVim source URL' })

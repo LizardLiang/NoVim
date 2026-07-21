@@ -112,23 +112,39 @@ local function setup_keymaps(buf)
   end)
 end
 
-function M.edit_url()
+-- Applies a new source URL and reloads the chapter list.
+local function apply_url(url)
+  local settings = require('novim.settings')
+  settings.set_source_url(url)
+  state.toc = nil
+  state.toc_loading = false
+  vim.schedule(function()
+    vim.notify('[NoVim] URL updated. Reloading...', vim.log.levels.INFO)
+    M.load_toc()
+  end)
+end
+
+-- Change the source URL. Pass a URL to set it directly (":NoVimUrl <url>"),
+-- or omit it to be prompted with the current value pre-filled.
+function M.edit_url(url)
+  if url then
+    url = url:match('^%s*(.-)%s*$')
+    if url ~= '' then
+      apply_url(url)
+      return
+    end
+  end
+
   local settings = require('novim.settings')
   local current = settings.get_source_url() or ''
-  vim.ui.input({ prompt = '[NoVim] Source URL: ', default = current }, function(url)
-    if not url then return end -- cancelled
-    url = url:match('^%s*(.-)%s*$')
-    if url == '' then
+  vim.ui.input({ prompt = '[NoVim] Source URL: ', default = current }, function(input)
+    if not input then return end -- cancelled
+    input = input:match('^%s*(.-)%s*$')
+    if input == '' then
       vim.notify('[NoVim] URL unchanged.', vim.log.levels.INFO)
       return
     end
-    settings.set_source_url(url)
-    state.toc = nil
-    state.toc_loading = false
-    vim.schedule(function()
-      vim.notify('[NoVim] URL updated. Reloading...', vim.log.levels.INFO)
-      M.load_toc()
-    end)
+    apply_url(input)
   end)
 end
 
