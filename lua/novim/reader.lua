@@ -35,13 +35,51 @@ local function setup_reader_keymaps(buf)
   end, opts)
 end
 
-local function setup_autosave(buf)
+-- Decide the line to save when `target_buf` is left, given the set of
+-- currently open windows (as {win, buf} pairs so this stays a pure
+-- function callers can unit-test without a live Neovim UI). Returns the
+-- cursor line from whichever window actually displays `target_buf`, or
+-- nil if no window does (the buffer was left via a swap onto a window
+-- that no longer shows it -- skip the save rather than saving a cursor
+-- position that belongs to some other buffer/window).
+function M.resolve_autosave_line(target_buf, win_buf_pairs, cursor_fn)
+  for _, pair in ipairs(win_buf_pairs) do
+    if pair.buf == target_buf then
+      return cursor_fn(pair.win)
+    end
+  end
+  return nil
+end
+
+-- `url` is bound at buffer-creation time (once, since setup_autosave is
+-- only called for newly created buffers -- see M.open) rather than read
+-- from state.current_url inside the callback. state.current_url is
+-- reassigned to the NEW chapter's url before BufLeave fires on the OLD
+-- buffer, so reading it here would save the old buffer's cursor line
+-- under the new novel's key. Binding at closure-creation time keeps each
+-- buffer saving under its own, stable url.
+--
+-- `title` (the novel's title, not the chapter's -- see state.chapter_title
+-- for that) is bound the exact same way, for the exact same reason: it's
+-- whatever was already known for this novel at the moment THIS buffer was
+-- created, not re-read from anywhere mutable when BufLeave eventually
+-- fires. May be nil if the title hasn't been captured yet (fetch is async,
+-- see sidebar.load_toc) -- progress.save treats an omitted/nil title as
+-- "leave whatever's already stored alone", so this never wipes a title a
+-- later save captures.
+local function setup_autosave(buf, url, title)
   vim.api.nvim_create_autocmd({ 'BufLeave' }, {
     buffer = buf,
     callback = function()
-      if state.current_url then
-        local line = vim.api.nvim_win_get_cursor(0)[1]
-        progress.save(state.current_url, line)
+      local win_buf_pairs = {}
+      for _, win in ipairs(vim.api.nvim_list_wins()) do
+        table.insert(win_buf_pairs, { win = win, buf = vim.api.nvim_win_get_buf(win) })
+      end
+      local line = M.resolve_autosave_line(buf, win_buf_pairs, function(win)
+        return vim.api.nvim_win_get_cursor(win)[1]
+      end)
+      if line then
+        progress.save(url, line, title)
       end
     end,
   })
@@ -74,7 +112,10 @@ function M.open(url)
     vim.bo[buf].swapfile = false
     vim.bo[buf].bufhidden = 'hide'
     setup_reader_keymaps(buf)
-    setup_autosave(buf)
+
+    local novel_key = sites.resolve(url).novel_key(url)
+    local saved = progress.load(novel_key)
+    setup_autosave(buf, url, saved and saved.title or nil)
   end
 
   vim.bo[buf].modifiable = true

@@ -27,3 +27,20 @@ end, { desc = 'Toggle NoVim reader sidebar' })
 vim.api.nvim_create_user_command('NoVimUrl', function(opts)
   require('novim.sidebar').edit_url(opts.args ~= '' and opts.args or nil)
 end, { nargs = '?', desc = 'Edit NoVim source URL' })
+
+-- Register :NoVimSearch command — search every searchable source at once.
+-- Takes an optional inline query (joined verbatim by nargs = '*'); without
+-- one, prompts for it.
+vim.api.nvim_create_user_command('NoVimSearch', function(opts)
+  if opts.args ~= '' then
+    require('novim.picker').search(opts.args)
+  else
+    require('novim.picker').prompt_and_search()
+  end
+end, { nargs = '*', desc = 'Search novels across all searchable sources' })
+
+-- Register :NoVimLibrary command — list every novel with saved progress in
+-- a dedicated window, most-recently-read first.
+vim.api.nvim_create_user_command('NoVimLibrary', function()
+  require('novim.library').open()
+end, { desc = 'Open the NoVim novel library' })

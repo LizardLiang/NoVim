@@ -37,10 +37,25 @@ function M.novel_key(url)
   return fetcher.bare_host(url) .. parse_base_path(url)
 end
 
+-- No site of its own to search -- excluded from the search flow via this
+-- explicit flag, not by probing for search-only methods it doesn't have.
+M.searchable = false
+
+-- Same plain-GET-of-the-index-page fetch every legacy site always used.
+M.fetch_toc_html = fetcher.http_get
+
 -- Legacy chapter URLs are never treated as an "entry chapter" to
 -- auto-open — that behaviour is new, czbooks-only functionality.
 function M.entry_chapter(_)
   return nil
+end
+
+-- No site of its own -- no generic element reliably names the novel across
+-- every arbitrary site this fallback might match. Scheduled (rather than
+-- calling back synchronously) so the contract's "always async" guarantee
+-- holds even for the one adapter that does no I/O.
+function M.fetch_novel_title(_index_url, callback)
+  vim.schedule(function() callback(nil, nil) end)
 end
 
 function M.parse_toc(html, source_url)
