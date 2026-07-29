@@ -511,12 +511,16 @@ do
   local results, err = ixdzs.parse_search(html, 'https://ixdzs.tw/bsearch?q=x')
   truthy(results and not err, 'ixdzs search parses without error')
   if results then
-    eq(#results, 2, 'ixdzs search returns 2 results')
+    eq(#results, 3, 'ixdzs search returns 3 results')
     eq(results[1].title, 'Placeholder Novel One Full Title', 'ixdzs search first result title (from a[title], not truncated link text)')
     eq(results[1].url, 'https://ixdzs.tw/read/552802/', 'ixdzs search first result URL resolved absolute from data-url')
     eq(results[1].author, 'Placeholder Author One', 'ixdzs search first result author')
     eq(results[1].status, 'Ongoing', 'ixdzs search first result status')
+    eq(results[1].size, '1.2MB', 'ixdzs search first result size (span.size)')
     eq(results[2].title, 'Placeholder Novel Two Full Title', 'ixdzs search second result title')
+    eq(results[2].size, '3.4MB', 'ixdzs search second result size (span.size)')
+    eq(results[3].title, 'Placeholder Novel Three Full Title', 'ixdzs search third result title')
+    is_nil(results[3].size, 'ixdzs search result without span.size leaves size nil rather than erroring')
   end
 end
 
@@ -533,6 +537,7 @@ do
     eq(results[1].url, 'https://czbooks.net/n/aaa111', 'czbooks search first result URL resolved from a protocol-relative href')
     eq(results[1].author, 'Placeholder Author Alpha', 'czbooks search first result author')
     eq(results[1].status, 'Ongoing', 'czbooks search first result status')
+    is_nil(results[1].size, 'czbooks search results have no size field (czbooks has no word-count markup)')
     eq(results[2].title, 'Placeholder Novel Beta', 'czbooks search second result title')
   end
 end

@@ -30,8 +30,8 @@ local function build_preview_lines(r)
     'Author: ' .. (r.author or ''),
     'Status: ' .. (r.status or ''),
   }
-  if r.latest_chapter and r.latest_chapter ~= '' then
-    table.insert(lines, 'Latest: ' .. r.latest_chapter)
+  if r.size and r.size ~= '' then
+    table.insert(lines, 'Size:   ' .. r.size)
   end
   table.insert(lines, 'URL:    ' .. (r.url or ''))
   return lines

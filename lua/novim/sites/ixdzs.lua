@@ -269,7 +269,8 @@ function M.search_request(query)
 end
 
 -- ul.u-list of li.burl[data-url="/read/<bid>/"], title h3.bname > a[title],
--- author span.bauthor > a, status span.lz.
+-- author span.bauthor > a, status span.lz, word count span.size (e.g.
+-- "303.33萬字" -- ixdzs-only; czbooks has no equivalent field).
 function M.parse_search(html, url)
   local host = fetcher.parse_host(url)
   local results = {}
@@ -280,10 +281,12 @@ function M.parse_search(html, url)
       local title = inner:match('[Hh]3[^>]*class%s*=%s*["\']bname["\'].-<[Aa][^>]*title%s*=%s*["\']([^"\']*)["\']')
       local author = inner:match('[Ss]pan[^>]*class%s*=%s*["\']bauthor["\'][^>]*>.-<[Aa][^>]*>([^<]*)</[Aa]>')
       local status = inner:match('[Ss]pan[^>]*class%s*=%s*["\']lz["\'][^>]*>([^<]*)</[Ss]pan>')
+      local size = inner:match('[Ss]pan[^>]*class%s*=%s*["\']size["\'][^>]*>([^<]*)</[Ss]pan>')
 
       if title then title = title:match('^%s*(.-)%s*$') end
       if author then author = author:match('^%s*(.-)%s*$') end
       if status then status = status:match('^%s*(.-)%s*$') end
+      if size then size = size:match('^%s*(.-)%s*$') end
 
       if data_url and title and title ~= '' then
         table.insert(results, {
@@ -292,6 +295,7 @@ function M.parse_search(html, url)
           url = fetcher.make_absolute(data_url, host),
           author = author,
           status = status,
+          size = size,
         })
       end
     end
