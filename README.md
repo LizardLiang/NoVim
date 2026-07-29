@@ -2,6 +2,24 @@
 
 Read web novels inside Neovim.
 
+> **For learning purposes only.**
+>
+> This is a personal project written to explore Neovim plugin development in
+> Lua — HTML parsing without a DOM, asynchronous requests, buffer and window
+> management, and a site-adapter architecture. It is not intended for
+> production use or general distribution.
+>
+> NoVim fetches and reformats pages from third-party sites it has no
+> affiliation with. Those sites host content owned by its authors and
+> publishers, and their terms of service and applicable copyright law govern
+> what you may do with it. Nothing here grants any right to that content.
+> Point it only at material you are permitted to access, respect each site's
+> terms and `robots.txt`, keep request volume modest, and don't
+> redistribute what it downloads.
+>
+> The site adapters depend on page structure that can change without notice,
+> so expect them to break. No support or maintenance is promised.
+
 - NeoTree-style sidebar with collapsible chapter list
 - Fetches and displays content in a read-only buffer
 - Remembers your exact reading position (chapter + line) per novel, across sessions
