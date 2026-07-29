@@ -788,6 +788,204 @@ do
 
   if not ok then error(err, 0) end
 end
+
+----------------------------------------------------------------------
+-- progress.lua: list() / remove() / save(title) -- the data layer behind
+-- lua/novim/library.lua (tactical plan Phase 2).
+----------------------------------------------------------------------
+
+do
+  with_progress_file(
+    '{"novels":{'
+      .. '"a/1":{"url":"https://a.example/1","line":3,"saved_at":"2026-07-20T00:00:00Z"},'
+      .. '"a/2":{"url":"https://a.example/2","line":5,"saved_at":"2026-07-25T00:00:00Z","title":"Newer"},'
+      .. '"a/3":{"url":"https://a.example/3","line":1},'
+      .. '"a/4":{"url":"https://a.example/4","line":2,"saved_at":"2026-07-25T00:00:00Z","title":"Newer Tie"}'
+      .. '},"last":"a/2"}',
+    function()
+      local list = progress.list()
+      eq(#list, 4, 'progress.list returns every stored entry')
+      eq(list[1].key, 'a/2', 'progress.list: most recent saved_at sorts first')
+      eq(list[2].key, 'a/4', 'progress.list: equal saved_at ties break deterministically by key (a/2 < a/4)')
+      eq(list[3].key, 'a/1', 'progress.list: older saved_at sorts after both tied-newest entries')
+      eq(list[4].key, 'a/3', 'progress.list: an entry with no saved_at at all (legacy/pre-existing) sorts last')
+      eq(list[1].title, 'Newer', 'progress.list carries the title field through')
+      is_nil(list[4].title, 'progress.list: an entry with no title has a nil title field')
+    end
+  )
+end
+
+do
+  with_progress_file(
+    '{"novels":{'
+      .. '"a/1":{"url":"https://a.example/1","line":3,"saved_at":"2026-07-20T00:00:00Z"},'
+      .. '"a/2":{"url":"https://a.example/2","line":5,"saved_at":"2026-07-25T00:00:00Z"}'
+      .. '},"last":"a/2"}',
+    function()
+      progress.remove('a/2')
+      is_nil(progress.load('a/2'), 'progress.remove deletes the target entry')
+      truthy(progress.load('a/1') ~= nil, 'progress.remove leaves other entries intact')
+      is_nil(progress.load(), 'progress.remove clears `last` when it pointed at the removed key')
+    end
+  )
+end
+
+do
+  with_progress_file(
+    '{"novels":{'
+      .. '"a/1":{"url":"https://a.example/1","line":3,"saved_at":"2026-07-20T00:00:00Z"},'
+      .. '"a/2":{"url":"https://a.example/2","line":5,"saved_at":"2026-07-25T00:00:00Z"}'
+      .. '},"last":"a/1"}',
+    function()
+      progress.remove('a/2')
+      truthy(progress.load('a/1') ~= nil, 'progress.remove leaves an unrelated entry intact')
+      eq(progress.load('a/1').line, 3, "progress.remove does not disturb the remaining entry's data")
+      truthy(progress.load() ~= nil, 'progress.remove does not clear `last` when it pointed at a DIFFERENT entry')
+    end
+  )
+end
+
+do
+  with_progress_file('{"novels":{}}', function()
+    progress.save('https://czbooks.net/n/ui5on5', 10, 'My Novel')
+    local saved = progress.load('czbooks.net/ui5on5')
+    truthy(saved ~= nil, 'progress.save creates the entry')
+    eq(saved.title, 'My Novel', 'progress.save round-trips the title')
+
+    -- A later save that omits title must not wipe the one already stored --
+    -- reader.lua's setup_autosave and init.lua's exit-save both do this.
+    progress.save('https://czbooks.net/n/ui5on5', 12)
+    saved = progress.load('czbooks.net/ui5on5')
+    eq(saved.line, 12, 'progress.save without a title still updates line')
+    eq(saved.title, 'My Novel', 'progress.save without a title preserves the previously stored title')
+  end)
+end
+
+do
+  with_progress_file('{"novels":{}}', function()
+    progress.save('https://czbooks.net/n/ui5on5', 3)
+    local saved = progress.load('czbooks.net/ui5on5')
+    truthy(saved ~= nil, 'progress.save without a title still creates a valid entry')
+    is_nil(saved.title, 'a record saved without a title has a nil title field (still loads fine)')
+  end)
+end
+
+do
+  with_progress_file(
+    '{"novels":{"a/1":{"url":"https://a.example/1","line":1,"saved_at":"2026-07-20T00:00:00Z"}}}',
+    function()
+      progress.mark_title_attempted('a/1')
+      local list = progress.list()
+      truthy(list[1].title_attempted == true,
+        'progress.mark_title_attempted persists the attempt marker, surfaced via progress.list')
+    end
+  )
+end
+
+----------------------------------------------------------------------
+-- fetch_novel_title (tactical plan Phase 1): site-specific novel title
+-- capture, one method per adapter. fetch_novel_title is contractually
+-- async (fetcher.http_get_async), so http_get_async is stubbed to hand
+-- back real fixture content synchronously instead of hitting the network.
+--
+-- Fixtures (tests/fixtures/ixdzs_novel_index.html,
+-- tests/fixtures/czbooks_novel_index.html) are byte-for-byte cuts of pages
+-- captured live from the real sites, NOT hand-written from the tactical
+-- plan's prose -- this branch already shipped one broken feature (]c nav)
+-- from a hand-written fixture that matched the plan's description instead
+-- of the real markup (class="chapter-paging chapter-next" vs the plan's
+-- a.chapter-next), so title fixtures are held to the same standard. The
+-- czbooks fixture in particular keeps a real decoy the site itself emits
+-- (<li class = "title">熱門搜尋</li>, a keywords heading) ahead of the real
+-- <span class = "title">, so this also pins that the span-scoped selector
+-- doesn't fall for it.
+----------------------------------------------------------------------
+
+local function with_stubbed_http_get_async(body, stub_err, fn)
+  local prev = fetcher.http_get_async
+  fetcher.http_get_async = function(_url, _headers, callback)
+    callback(body, stub_err)
+  end
+  local ok, call_err = pcall(fn)
+  fetcher.http_get_async = prev
+  if not ok then error(call_err, 0) end
+end
+
+-- Runs fetch_novel_title(url, callback) to completion and returns what the
+-- callback received. Pumps the event loop via vim.wait so this also works
+-- for an adapter (legacy) that schedules its callback via vim.schedule
+-- instead of firing it synchronously, without the test needing to know
+-- which.
+local function run_fetch_novel_title(adapter, url)
+  local done, title, title_err = false, nil, nil
+  adapter.fetch_novel_title(url, function(t, e)
+    done, title, title_err = true, t, e
+  end)
+  vim.wait(1000, function() return done end, 5)
+  truthy(done, 'fetch_novel_title callback fired (did not hang)')
+  return title, title_err
+end
+
+do
+  local html = read_fixture('ixdzs_novel_index.html')
+  with_stubbed_http_get_async(html, nil, function()
+    local title = run_fetch_novel_title(ixdzs, 'https://ixdzs.tw/read/552802/')
+    eq(title, '反派：我師妹全是黑化女帝', 'ixdzs fetch_novel_title extracts the real <h1> title from the fixture')
+  end)
+end
+
+do
+  local html = read_fixture('czbooks_novel_index.html')
+  with_stubbed_http_get_async(html, nil, function()
+    local title = run_fetch_novel_title(czbooks, 'https://czbooks.net/n/ui5on5')
+    eq(title, '《誰讓他修仙的！》',
+      'czbooks fetch_novel_title extracts the real <span class="title"> text, not the earlier <li class="title"> decoy')
+  end)
+end
+
+do
+  with_stubbed_http_get_async(nil, '[NoVim] Failed to fetch page. Check connection.', function()
+    local title, title_err = run_fetch_novel_title(ixdzs, 'https://ixdzs.tw/read/552802/')
+    is_nil(title, 'ixdzs fetch_novel_title returns a nil title on a transport error')
+    truthy(title_err ~= nil, 'ixdzs fetch_novel_title surfaces the transport error')
+  end)
+end
+
+do
+  local title, title_err = run_fetch_novel_title(legacy, 'https://example.com/book/ch/')
+  is_nil(title, 'legacy fetch_novel_title always returns nil (no site-specific title element)')
+  is_nil(title_err, 'legacy fetch_novel_title returns a nil error too -- absence, not failure')
+end
+
+----------------------------------------------------------------------
+-- library.lua: render_lines -- recency-order preservation, key-fallback
+-- for untitled entries, and the empty-state message. Pure over
+-- progress.list()-shaped entries, no live window needed -- same pattern as
+-- sidebar.collect_leaf_sequence.
+----------------------------------------------------------------------
+local library = require('novim.library')
+
+do
+  local lines, line_map = library.render_lines({})
+  eq(#lines, 3, 'library.render_lines: empty entries still renders header + separator + an explanatory line')
+  truthy(lines[3]:find('no saved novels', 1, true) ~= nil, 'library.render_lines: empty state explains there is nothing saved')
+  eq(next(line_map), nil, 'library.render_lines: empty state has an empty line_map (nothing selectable)')
+end
+
+do
+  local entries = {
+    { key = 'czbooks.net/ui5on5', url = 'https://czbooks.net/n/ui5on5', line = 5, title = 'Titled Novel' },
+    { key = 'ixdzs/552802', url = 'https://ixdzs.tw/read/552802/', line = 10 }, -- no title -- key fallback
+  }
+  local lines, line_map = library.render_lines(entries)
+  eq(#lines, 4, 'library.render_lines: header + separator + one line per entry')
+  truthy(lines[3]:find('Titled Novel', 1, true) ~= nil, 'library.render_lines shows the title when known')
+  truthy(lines[4]:find('ixdzs/552802', 1, true) ~= nil, 'library.render_lines falls back to the storage key when no title is known')
+  truthy(lines[4]:find('ixdzs', 1, true) ~= nil, "library.render_lines labels the entry's source")
+  eq(line_map[3].key, 'czbooks.net/ui5on5', "library.render_lines line_map preserves recency order passed in (1st entry -> 1st line)")
+  eq(line_map[4].key, 'ixdzs/552802', 'library.render_lines line_map preserves recency order passed in (2nd entry -> 2nd line)')
+end
+
 ----------------------------------------------------------------------
 print(string.format('\n%d checks, %d failures', checks, failures))
 if failures > 0 then

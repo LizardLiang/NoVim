@@ -189,6 +189,7 @@ local function setup_keymaps(buf)
   map('u', function() M.edit_url() end)
   map('s', function() require('novim.picker').prompt_and_search() end)
   map('c', function() M.jump_to_chapter() end)
+  map('l', function() require('novim.library').open() end)
   map('?', function()
     vim.notify(
       '[NoVim] Sidebar keys:\n'
@@ -198,7 +199,8 @@ local function setup_keymaps(buf)
         .. '  r  refresh chapter list\n'
         .. '  u  change source URL\n'
         .. '  s  search across sources\n'
-        .. '  c  jump to chapter number',
+        .. '  c  jump to chapter number\n'
+        .. '  l  open novel library',
       vim.log.levels.INFO
     )
   end)
@@ -292,17 +294,39 @@ function M.load_toc()
   vim.notify(string.format('[NoVim] Loaded %d chapter groups.', #toc), vim.log.levels.INFO)
   M.refresh_highlight()
 
-  -- If the pasted source_url names a specific chapter and nothing has
-  -- been saved for this novel yet, open that chapter now.
   local sites = require('novim.sites')
   local adapter = sites.resolve(source_url)
+  local progress = require('novim.progress')
+  local key = adapter.novel_key(source_url)
+
+  -- If the pasted source_url names a specific chapter and nothing has
+  -- been saved for this novel yet, open that chapter now.
   local entry_chapter = adapter.entry_chapter(source_url)
   if entry_chapter and not state.current_url then
-    local progress = require('novim.progress')
-    local key = adapter.novel_key(source_url)
     if not progress.load(key) then
       require('novim.reader').open(source_url)
     end
+  end
+
+  -- Capture the novel's title once, not on every TOC load (tactical plan
+  -- Phase 3): only when a saved record for this novel already exists and
+  -- doesn't have one yet. Async and best-effort -- fetch_novel_title runs
+  -- over fetcher.http_get_async, so this never blocks or delays the
+  -- chapter list that already rendered above, and on failure it's silent
+  -- beyond the (rare) fetch_novel_title error -- the library just falls
+  -- back to displaying the storage key. A novel with no saved record at
+  -- all yet (never read) has nowhere to persist a title to and is caught
+  -- by the library's own backfill sweep once it has been read.
+  local saved = progress.load(key)
+  if saved and not saved.title then
+    local index_url = adapter.normalise_url(source_url)
+    adapter.fetch_novel_title(index_url, function(title)
+      if not title then return end
+      local current = progress.load(key)
+      if current then
+        progress.save(current.url, current.line, title)
+      end
+    end)
   end
 end
 

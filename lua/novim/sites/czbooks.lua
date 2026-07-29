@@ -216,6 +216,39 @@ function M.parse_chapter(html, url)
   return lines, prev_url, next_url, title, nil
 end
 
+-- The novel title lives in <span class = "title"> on the TOC/index page
+-- (verified live 2026-07-20, tests/fixtures/czbooks_novel_index.html is a
+-- cut of the real capture) -- NOT <title>/og:title, both of which carry a
+-- promotional prefix and a "| 小說狂人" site-name suffix on real pages.
+-- Scoped to a <span> specifically: the same page also has unrelated
+-- <li class = "title"> decoys (e.g. a "熱門搜尋" keywords heading) that a
+-- class-only match would wrongly hit first.
+function M.fetch_novel_title(index_url, callback)
+  fetcher.http_get_async(index_url, nil, function(html, err)
+    if err or not html then
+      callback(nil, err)
+      return
+    end
+    local title
+    local tag_start = html:find('<[Ss]pan[^>]*class%s*=%s*["\']title["\']')
+    if tag_start then
+      local tag_close = html:find('>', tag_start, true)
+      if tag_close then
+        local after = html:sub(tag_close + 1)
+        local lt = after:find('<')
+        if lt then
+          title = after:sub(1, lt - 1):match('^%s*(.-)%s*$')
+        end
+      end
+    end
+    if not title or title == '' then
+      callback(nil, '[NoVim] Could not find novel title on page.')
+      return
+    end
+    callback(title, nil)
+  end)
+end
+
 function M.bufname(url)
   local novel_id, chapter_id = parse_ids(url)
   if novel_id and chapter_id then

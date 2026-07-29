@@ -72,7 +72,15 @@ function M.load(key)
   return data.last and data.novels[data.last] or nil
 end
 
-function M.save(url, line)
+-- `title` is optional (third param). When omitted, whatever title was
+-- already stored for this novel is carried over rather than being wiped --
+-- callers that don't know the title yet (e.g. init.lua's VimLeavePre exit
+-- save, or a plain autosave before fetch_novel_title has resolved) must
+-- not clobber a title a previous save already captured. This is reading
+-- this SAME key's own already-persisted value, not the global-state
+-- coupling the parent branch's autosave bug was about -- see reader.lua's
+-- setup_autosave, which binds `title` per buffer exactly like `url`.
+function M.save(url, line, title)
   local sites = require('novim.sites')
   local key = sites.resolve(url).novel_key(url)
 
@@ -80,14 +88,82 @@ function M.save(url, line)
   local data = raw and migrate(raw) or { novels = {} }
   data.novels = data.novels or {}
 
+  local existing = data.novels[key]
   data.novels[key] = {
     url = url,
     line = line,
+    title = title or (existing and existing.title) or nil,
     saved_at = os.date('!%Y-%m-%dT%H:%M:%SZ'),
   }
   data.last = key
 
   write_json(config.options.save_path, data)
+end
+
+-- Deletes a novel's saved progress entirely. Clears `last` too when it
+-- pointed at the removed key, so the next resume prompt (init.toggle)
+-- doesn't offer a novel that no longer exists. No-op if the key isn't
+-- present (nothing to remove, nothing to throw about).
+function M.remove(key)
+  local raw = read_json(config.options.save_path)
+  if not raw then return end
+  local data = migrate(raw)
+  if not data.novels or not data.novels[key] then return end
+
+  data.novels[key] = nil
+  if data.last == key then
+    data.last = nil
+  end
+
+  write_json(config.options.save_path, data)
+end
+
+-- Sets a marker on a stored entry recording that a title fetch was
+-- attempted (and failed, or the adapter has no title source) -- without
+-- touching url/line -- so lua/novim/library.lua's backfill sweep doesn't
+-- refire a request for a permanently unreachable/untitleable entry on
+-- every library open. No-op if the key isn't present.
+function M.mark_title_attempted(key)
+  local raw = read_json(config.options.save_path)
+  if not raw then return end
+  local data = migrate(raw)
+  local entry = data.novels and data.novels[key]
+  if not entry then return end
+
+  entry.title_attempted = true
+  write_json(config.options.save_path, data)
+end
+
+-- Every stored novel as a flat list (each entry carries its own `key`),
+-- ordered most-recently-read first (by `saved_at`, ISO-8601 UTC so plain
+-- string comparison sorts correctly). Entries with an equal or missing
+-- saved_at (pre-existing/legacy entries) fall back to a key comparison so
+-- ordering is deterministic rather than depending on pairs() iteration
+-- order. Pure aside from the read, so it's directly unit-testable.
+function M.list()
+  local raw = read_json(config.options.save_path)
+  if not raw then return {} end
+  local data = migrate(raw)
+
+  local list = {}
+  for key, entry in pairs(data.novels or {}) do
+    table.insert(list, {
+      key = key,
+      url = entry.url,
+      line = entry.line,
+      title = entry.title,
+      title_attempted = entry.title_attempted,
+      saved_at = entry.saved_at,
+    })
+  end
+
+  table.sort(list, function(a, b)
+    local a_saved, b_saved = a.saved_at or '', b.saved_at or ''
+    if a_saved ~= b_saved then return a_saved > b_saved end
+    return a.key < b.key
+  end)
+
+  return list
 end
 
 return M

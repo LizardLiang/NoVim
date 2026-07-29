@@ -38,3 +38,9 @@ vim.api.nvim_create_user_command('NoVimSearch', function(opts)
     require('novim.picker').prompt_and_search()
   end
 end, { nargs = '*', desc = 'Search novels across all searchable sources' })
+
+-- Register :NoVimLibrary command — list every novel with saved progress in
+-- a dedicated window, most-recently-read first.
+vim.api.nvim_create_user_command('NoVimLibrary', function()
+  require('novim.library').open()
+end, { desc = 'Open the NoVim novel library' })

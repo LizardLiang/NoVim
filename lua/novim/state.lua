@@ -10,4 +10,7 @@ return {
   prev_url = nil,
   next_url = nil,
   reader_buf = nil,
+  library_win = nil,
+  library_buf = nil,
+  library_line_map = {},
 }

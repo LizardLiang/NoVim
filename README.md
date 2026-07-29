@@ -7,6 +7,8 @@ Read web novels inside Neovim.
 - Remembers your exact reading position (chapter + line) per novel, across sessions
 - Prev/next chapter navigation with `]c` / `[c`
 - Search every supported source at once with `:NoVimSearch`
+- A novel library (`:NoVimLibrary`) to switch between every previously read
+  novel, most-recently-read first
 
 ## Supported sites
 
@@ -36,6 +38,29 @@ Uses [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim)
 when installed, for a streaming, filterable picker; falls back to
 `vim.ui.select` (or whatever plugin, e.g. `dressing.nvim`, replaces it)
 when Telescope isn't present — neither is a required dependency.
+
+## Novel library
+
+`:NoVimLibrary` (or the sidebar's `l` key) opens a dedicated window listing
+every novel you have saved reading progress for, most-recently-read first,
+each showing its title (fetched automatically from the site when the
+chapter list loads) and saved position — or its storage key when a title
+isn't available yet or the site has none (the fallback adapter never has
+one). This is a dedicated window rather than a picker: `vim.ui.select`
+can't bind a removal key, so on a setup with no Telescope installed a
+picker-based library would make removal unreachable.
+
+| Key | Action |
+|-----|--------|
+| `<Enter>` | Open the novel under the cursor — makes it the active source, loads its chapter list, and resumes its saved position |
+| `d` | Remove the novel under the cursor (confirms first — this deletes its saved position and cannot be undone) |
+| `q` | Close the library |
+| `r` | Refresh |
+
+The first time the library is opened, any pre-existing entries saved
+before this feature (or that failed to get a title before) have their
+titles backfilled in the background — the library stays usable immediately
+with keys shown as a placeholder, filling in as each title arrives.
 
 ## Requirements
 
@@ -95,6 +120,7 @@ when Telescope isn't present — neither is a required dependency.
 |---------------|--------|
 | `:NoVim` | Toggle chapter sidebar |
 | `:NoVimSearch [query]` | Search all sources (prompts if `query` omitted) |
+| `:NoVimLibrary` | Open the novel library |
 | `<leader>nv` | Toggle chapter sidebar (keymap) |
 | `<Enter>` in sidebar | Open chapter / expand group |
 | `o` or `<Tab>` in sidebar | Expand / collapse chapter group |
@@ -103,6 +129,7 @@ when Telescope isn't present — neither is a required dependency.
 | `u` in sidebar | Change source URL |
 | `s` in sidebar | Search across sources |
 | `c` in sidebar | Jump to chapter number |
+| `l` in sidebar | Open novel library |
 | `?` in sidebar | Show sidebar key help |
 | `]c` in reader | Next chapter |
 | `[c` in reader | Previous chapter |

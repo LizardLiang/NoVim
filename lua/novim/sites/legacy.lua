@@ -50,6 +50,14 @@ function M.entry_chapter(_)
   return nil
 end
 
+-- No site of its own -- no generic element reliably names the novel across
+-- every arbitrary site this fallback might match. Scheduled (rather than
+-- calling back synchronously) so the contract's "always async" guarantee
+-- holds even for the one adapter that does no I/O.
+function M.fetch_novel_title(_index_url, callback)
+  vim.schedule(function() callback(nil, nil) end)
+end
+
 function M.parse_toc(html, source_url)
   local sidebar_html = fetcher.extract_between(html, 'sidebar', 'article')
   if not sidebar_html then

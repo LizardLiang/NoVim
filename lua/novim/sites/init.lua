@@ -17,9 +17,28 @@
 --   statusline(url, title)        -> statusline label string
 --   label(url)                    -> human-readable resume-prompt label string
 --   searchable                    -> boolean; declares search capability
+--   fetch_novel_title(index_url, callback) -> nothing; calls
+--                                     callback(title, err) exactly once,
+--                                     asynchronously (over
+--                                     fetcher.http_get_async), never
+--                                     synchronously. `title` is nil when
+--                                     the fetch/parse fails, or when the
+--                                     adapter has no site-specific title
+--                                     element at all (legacy). A generic
+--                                     <title>/og:title grab is wrong here —
+--                                     at least one supported site (czbooks)
+--                                     pollutes both with promotional/
+--                                     site-suffix text — so each adapter
+--                                     picks its own source. Callback-based
+--                                     rather than a direct return so the
+--                                     library's backfill (lua/novim/library.lua)
+--                                     can fan multiple novels' title
+--                                     requests out concurrently, the same
+--                                     shape as search.lua's per-adapter
+--                                     callback.
 --
--- All methods above (including fetch_toc_html) are required on every
--- adapter — callers invoke them unconditionally, with no
+-- All methods above (including fetch_toc_html and fetch_novel_title) are
+-- required on every adapter — callers invoke them unconditionally, with no
 -- `adapter.method and adapter.method(...)` optional-guard pattern.
 --
 -- When `searchable == true`, the adapter additionally implements:
