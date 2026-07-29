@@ -493,6 +493,19 @@ do
     not_contains(body, 'var x = 1', 'ixdzs chapter p1 body excludes inline script content')
     is_nil(lines[1]:match('^Placeholder Chapter Title 1$'), 'ixdzs chapter p1 duplicated h3 heading is not the first body line')
   end
+
+  -- The chapter-1 trap link (a.chapter-pre pointing at the novel index,
+  -- multi-class on the real site: class="chapter-paging chapter-pre")
+  -- MUST actually be found by extract_nav_href -- if it weren't (e.g. a
+  -- regression back to exact-match class matching), prev_url would also
+  -- come out nil, but for the WRONG reason: "never matched" rather than
+  -- "matched, then rejected by the p<N>.html guard". Pinning both layers
+  -- separately means a regression to the old exact-match bug shows up
+  -- here even though prev_url alone would still read nil either way.
+  local raw_prev_href = ixdzs.extract_nav_href(html, 'chapter-pre')
+  eq(raw_prev_href, '/read/552802/',
+    'ixdzs chapter p1 chapter-pre link IS found despite its multi-class attribute (class="chapter-paging chapter-pre")')
+
   is_nil(prev_url, 'ixdzs chapter p1 has no previous chapter (chapter-pre points at the index page trap)')
   eq(next_url, 'https://ixdzs.tw/read/552802/p2.html', 'ixdzs chapter p1 next URL resolved absolute')
 end
@@ -504,6 +517,32 @@ do
   eq(title, 'Placeholder Chapter Title Mid', 'ixdzs chapter mid title read from h1.page-d-name')
   eq(prev_url, 'https://ixdzs.tw/read/552802/p2.html', 'ixdzs chapter mid previous URL resolved absolute')
   eq(next_url, 'https://ixdzs.tw/read/552802/p4.html', 'ixdzs chapter mid next URL resolved absolute')
+end
+
+-- Regression: the real site emits multi-valued class attributes for chapter
+-- nav (class="chapter-paging chapter-next" / "chapter-paging chapter-pre"),
+-- not the single-token class the old extract_nav_href assumed. This pins
+-- token-boundary matching directly: near-miss tokens sharing a prefix or
+-- suffix with the real class name must never match, the real token must be
+-- found regardless of its position in the class list or the surrounding
+-- attribute order, and a near-miss link earlier in the document must not
+-- win a first-match-wins scan over the genuine one later in the document.
+do
+  local html = read_fixture('ixdzs_chapter_multiclass.html')
+
+  local next_href = ixdzs.extract_nav_href(html, 'chapter-next')
+  eq(next_href, '/read/552802/p4.html',
+    'ixdzs extract_nav_href finds the genuine chapter-next token (href-before-class order), skipping the "chapter-next-x" near-miss')
+
+  local prev_href = ixdzs.extract_nav_href(html, 'chapter-pre')
+  eq(prev_href, '/read/552802/p2.html',
+    'ixdzs extract_nav_href finds the genuine chapter-pre token in the middle of a multi-value list (class-before-href order), skipping the "xchapter-pre" near-miss')
+
+  local lines, prev_url, next_url, title, err = ixdzs.parse_chapter(html, 'https://ixdzs.tw/read/552802/p3.html')
+  truthy(lines and not err, 'ixdzs chapter multiclass parses without error')
+  eq(title, 'Placeholder Chapter Title Multiclass', 'ixdzs chapter multiclass title read from h1.page-d-name')
+  eq(prev_url, 'https://ixdzs.tw/read/552802/p2.html', 'ixdzs chapter multiclass previous URL resolved absolute, not the decoy')
+  eq(next_url, 'https://ixdzs.tw/read/552802/p4.html', 'ixdzs chapter multiclass next URL resolved absolute, not the decoy')
 end
 
 do
@@ -749,7 +788,6 @@ do
 
   if not ok then error(err, 0) end
 end
-
 ----------------------------------------------------------------------
 print(string.format('\n%d checks, %d failures', checks, failures))
 if failures > 0 then

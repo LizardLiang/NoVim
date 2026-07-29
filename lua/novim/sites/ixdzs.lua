@@ -211,10 +211,50 @@ local function strip_leading_duplicate_heading(content_html, title)
   return content_html
 end
 
-local function extract_nav_href(html, class_name)
-  return html:match('<[Aa][^>]*class%s*=%s*["\']' .. class_name .. '["\'][^>]*href%s*=%s*["\']([^"\']+)["\']')
-      or html:match('<[Aa][^>]*href%s*=%s*["\']([^"\']+)["\'][^>]*class%s*=%s*["\']' .. class_name .. '["\']')
+-- Returns true when `class_value` (the full attribute value, e.g.
+-- "chapter-paging chapter-next") carries `token` as one of its
+-- whitespace-separated class tokens -- not merely as a substring, so a
+-- near-miss like "chapter-next-foo" or "xchapter-next" never matches
+-- "chapter-next". Plain string equality per token, not a Lua pattern, so
+-- callers pass the literal class name.
+local function has_class_token(class_value, token)
+  for cls in class_value:gmatch('%S+') do
+    if cls == token then return true end
+  end
+  return false
 end
+
+-- Finds the href of the first <a> tag in `html` whose class attribute
+-- carries `class_name` as one token among a possibly multi-valued class
+-- list -- the real site emits class="chapter-paging chapter-next", not
+-- the single-token class="chapter-next" the old exact-match version
+-- assumed. Tolerant of either attribute order (class before href, or
+-- href before class) and of `class%s*=%s*` spacing/quote-style
+-- variation, same as the rest of this file.
+local function extract_nav_href(html, class_name)
+  local pos = 1
+  while true do
+    local tag_start = html:find('<[Aa]', pos)
+    if not tag_start then return nil end
+    local tag_end = html:find('>', tag_start, true)
+    if not tag_end then return nil end
+    local tag = html:sub(tag_start, tag_end)
+
+    local class_value = tag:match('class%s*=%s*["\']([^"\']*)["\']')
+    if class_value and has_class_token(class_value, class_name) then
+      local href = tag:match('href%s*=%s*["\']([^"\']+)["\']')
+      if href then return href end
+    end
+
+    pos = tag_end + 1
+  end
+end
+
+-- Exposed (like sidebar.collect_leaf_sequence / reader.resolve_autosave_line)
+-- so tests can pin exact-match vs guard-rejection behaviour separately:
+-- the chapter-1 trap link IS found by this function (it's a real href),
+-- and is only turned into nil by parse_chapter's own p<N>.html guard.
+M.extract_nav_href = extract_nav_href
 
 function M.parse_chapter(html, url)
   local title = extract_title(html)
@@ -228,8 +268,8 @@ function M.parse_chapter(html, url)
   local lines = fetcher.strip_html_lines(content_html)
 
   local host = fetcher.parse_host(url)
-  local prev_href = extract_nav_href(html, 'chapter%-pre')
-  local next_href = extract_nav_href(html, 'chapter%-next')
+  local prev_href = extract_nav_href(html, 'chapter-pre')
+  local next_href = extract_nav_href(html, 'chapter-next')
 
   -- Chapter 1's a.chapter-pre points at the novel index (/read/<bid>/),
   -- not a chapter -- treat anything lacking a p<N>.html segment as absent
@@ -238,6 +278,28 @@ function M.parse_chapter(html, url)
   local next_url = (next_href and next_href:match('p%d+%.html')) and fetcher.make_absolute(next_href, host) or nil
 
   return lines, prev_url, next_url, title, nil
+end
+
+-- The novel title lives on the index page itself (matches og:title there —
+-- verified live 2026-07-29, tests/fixtures/ixdzs_novel_index.html is a cut
+-- of the real capture), NOT on the chapter-list response, which is a bare
+-- <li> fragment with no heading at all. `index_url` is already the
+-- normalise_url() result (host preserved, so mirrors work same as
+-- everywhere else in this file) -- just GET it directly.
+function M.fetch_novel_title(index_url, callback)
+  fetcher.http_get_async(index_url, nil, function(html, err)
+    if err or not html then
+      callback(nil, err)
+      return
+    end
+    local title = html:match('<[Hh]1[^>]*>(.-)</[Hh]1>')
+    if title then title = title:match('^%s*(.-)%s*$') end
+    if not title or title == '' then
+      callback(nil, '[NoVim] Could not find novel title on page.')
+      return
+    end
+    callback(title, nil)
+  end)
 end
 
 function M.bufname(url)
