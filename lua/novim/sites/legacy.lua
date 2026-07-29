@@ -37,6 +37,13 @@ function M.novel_key(url)
   return fetcher.bare_host(url) .. parse_base_path(url)
 end
 
+-- No site of its own to search -- excluded from the search flow via this
+-- explicit flag, not by probing for search-only methods it doesn't have.
+M.searchable = false
+
+-- Same plain-GET-of-the-index-page fetch every legacy site always used.
+M.fetch_toc_html = fetcher.http_get
+
 -- Legacy chapter URLs are never treated as an "entry chapter" to
 -- auto-open — that behaviour is new, czbooks-only functionality.
 function M.entry_chapter(_)

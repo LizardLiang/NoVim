@@ -51,6 +51,10 @@ function M.novel_key(url)
   return 'czbooks.net/' .. (novel_id or url)
 end
 
+-- The full TOC is reachable by a plain GET of the index page, unlike
+-- ixdzs -- no special fetch needed.
+M.fetch_toc_html = fetcher.http_get
+
 function M.parse_toc(html, url)
   local list_start = html:find('id%s*=%s*["\']chapter%-list["\']')
   if not list_start then
@@ -118,36 +122,10 @@ local function nearest_tag_start(html, upto)
   return nil
 end
 
--- Depth-aware walk that finds the byte offset of the '<' that begins the
--- closing </div> matching the div whose opening tag ends at `start_pos`
--- (i.e. `start_pos` is the byte right after that opening tag's '>').
--- Nested <div>...</div> pairs are tracked so a div nested inside the one
--- we're bounding doesn't terminate the scan early. Returns nil if no
--- matching close is found (malformed/truncated HTML) — callers should
--- fall back to a secondary terminator in that case rather than treating
--- the rest of the document as in-scope.
+-- Depth-aware div-close finder, delegated to the tag-generic version now
+-- shared in fetcher.lua (was previously private to this file).
 local function find_div_close(html, start_pos)
-  local depth = 1
-  local pos = start_pos
-  local len = #html
-  while pos <= len do
-    local open_s, open_e = html:find('<%s*[Dd][Ii][Vv][%s>]', pos)
-    local close_s, close_e = html:find('<%s*/%s*[Dd][Ii][Vv]%s*>', pos)
-    if not close_s then
-      return nil
-    end
-    if open_s and open_s < close_s then
-      depth = depth + 1
-      pos = open_e + 1
-    else
-      depth = depth - 1
-      if depth == 0 then
-        return close_s
-      end
-      pos = close_e + 1
-    end
-  end
-  return nil
+  return fetcher.find_tag_close(html, 'div', start_pos)
 end
 
 -- Byte range (start, end-exclusive-ish sub bounds) of the container the
@@ -255,6 +233,57 @@ end
 -- bufname() themselves.
 function M.label(url)
   return (M.bufname(url):gsub('^novim://', ''))
+end
+
+----------------------------------------------------------------------
+-- Search (searchable = true)
+----------------------------------------------------------------------
+
+M.searchable = true
+M.source_name = 'czbooks'
+
+function M.search_request(query)
+  return 'https://czbooks.net/s/' .. fetcher.url_encode(query)
+end
+
+-- GET /s/<query> -> ul.nav.novel-list of li.novel-item-wrapper, link
+-- a[href="//czbooks.net/n/<id>"] (protocol-relative), title
+-- div.novel-item-title, author div.novel-item-author > a, status
+-- div.novel-item-state. Attributes use spaced class = "…" here too, same
+-- as the TOC/chapter pages -- every pattern below tolerates that.
+function M.parse_search(html, url)
+  local host = fetcher.parse_host(url)
+  local results = {}
+
+  for attrs, inner in html:gmatch('<[Ll][Ii]([^>]-)>(.-)</[Ll][Ii]>') do
+    if attrs:match('class%s*=%s*["\']novel%-item%-wrapper["\']') then
+      -- Cloudflare rocket-loader injects <script> tags inside
+      -- div.novel-item-thumbnail; strip before text extraction so they
+      -- can't leak into a title/author/status match.
+      inner = inner:gsub('<[Ss][Cc][Rr][Ii][Pp][Tt][^>]*>.-</%s*[Ss][Cc][Rr][Ii][Pp][Tt]%s*>', '')
+
+      local href = inner:match('href%s*=%s*["\']([^"\']+)["\']')
+      local title = inner:match('class%s*=%s*["\']novel%-item%-title["\'][^>]*>([^<]*)<')
+      local author = inner:match('class%s*=%s*["\']novel%-item%-author["\'][^>]*>.-<[Aa][^>]*>([^<]*)</[Aa]>')
+      local status = inner:match('class%s*=%s*["\']novel%-item%-state["\'][^>]*>([^<]*)<')
+
+      if title then title = title:match('^%s*(.-)%s*$') end
+      if author then author = author:match('^%s*(.-)%s*$') end
+      if status then status = status:match('^%s*(.-)%s*$') end
+
+      if href and title and title ~= '' then
+        table.insert(results, {
+          source = M.source_name,
+          title = title,
+          url = fetcher.make_absolute(href, host),
+          author = author,
+          status = status,
+        })
+      end
+    end
+  end
+
+  return results, nil
 end
 
 return M

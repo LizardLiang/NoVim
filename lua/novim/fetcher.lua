@@ -123,6 +123,157 @@ function M.http_get(url, extra_headers)
   return body, nil
 end
 
+-- Percent-encode bytes outside the URL-safe unreserved set
+-- ([A-Za-z0-9-_.~]) so CJK and reserved characters survive being placed
+-- into a query string or POST form field.
+function M.url_encode(s)
+  return (s:gsub('[^%w%-_.~]', function(c)
+    return string.format('%%%02X', c:byte())
+  end))
+end
+
+-- Encode a flat table of form fields into an "a=1&b=2" application/
+-- x-www-form-urlencoded body, both keys and values percent-encoded.
+local function encode_form(form)
+  local parts = {}
+  for k, v in pairs(form or {}) do
+    table.insert(parts, M.url_encode(tostring(k)) .. '=' .. M.url_encode(tostring(v)))
+  end
+  return table.concat(parts, '&')
+end
+
+-- POST `form` (a flat key/value table) to `url`. Mirrors http_get's
+-- structure exactly: plenary path first, system-curl argv fallback
+-- second, same merged_headers() call so default UA/Accept-Language and
+-- host-scoped http_headers apply identically to POST as to GET.
+function M.http_post(url, form, extra_headers)
+  local headers = merged_headers(url, extra_headers)
+  local body = encode_form(form)
+
+  local ok, curl = pcall(require, 'plenary.curl')
+  if ok then
+    local res = curl.post(url, {
+      body = body,
+      timeout = 10000,
+      follow = true,
+      raw = { '-L' },
+      headers = headers,
+    })
+    if res and res.status == 200 then
+      return res.body, nil
+    end
+    local status = res and tostring(res.status) or '0'
+    if res and res.status == 404 then
+      return nil, '[NoVim] Page not found (404): ' .. url
+    end
+    return nil, '[NoVim] Failed to fetch page. Check connection. (status: ' .. status .. ')'
+  end
+
+  -- Fallback: system curl. Build the argument list (rather than a
+  -- formatted shell string) so headers/quoting survive on Windows, where
+  -- vim.fn.system(table) execs without a shell.
+  local args = { 'curl', '-sL', '--max-time', '10' }
+  for name, value in pairs(headers) do
+    table.insert(args, '-H')
+    table.insert(args, name .. ': ' .. value)
+  end
+  table.insert(args, '--data')
+  table.insert(args, body)
+  table.insert(args, url)
+
+  local resp_body = vim.fn.system(args)
+  if vim.v.shell_error ~= 0 then
+    return nil, '[NoVim] Failed to fetch page. Check connection.'
+  end
+  return resp_body, nil
+end
+
+-- Async GET. `callback(body, err)` is always invoked via vim.schedule, so
+-- callers never have to worry about running off the main loop regardless
+-- of which backend serviced the request.
+--
+-- plenary path: curl.get's own callback already fires off libuv's loop
+-- (not necessarily the main loop), so it is wrapped in vim.schedule too.
+-- Fallback path: vim.system when available (nvim >= 0.10); otherwise
+-- vim.fn.jobstart, since the README claims nvim >= 0.8 and vim.system
+-- alone is not available there.
+function M.http_get_async(url, extra_headers, callback)
+  local headers = merged_headers(url, extra_headers)
+
+  local ok, curl = pcall(require, 'plenary.curl')
+  if ok then
+    curl.get(url, {
+      timeout = 10000,
+      follow = true,
+      raw = { '-L' },
+      headers = headers,
+      callback = function(res)
+        vim.schedule(function()
+          if res and res.status == 200 then
+            callback(res.body, nil)
+            return
+          end
+          local status = res and tostring(res.status) or '0'
+          if res and res.status == 404 then
+            callback(nil, '[NoVim] Page not found (404): ' .. url)
+            return
+          end
+          callback(nil, '[NoVim] Failed to fetch page. Check connection. (status: ' .. status .. ')')
+        end)
+      end,
+      on_error = function(err)
+        vim.schedule(function()
+          callback(nil, '[NoVim] Failed to fetch page. ' .. tostring(err and err.message or 'Check connection.'))
+        end)
+      end,
+    })
+    return
+  end
+
+  -- Fallback: system curl, argv-table form (never a shell string).
+  local args = { 'curl', '-sL', '--max-time', '10' }
+  for name, value in pairs(headers) do
+    table.insert(args, '-H')
+    table.insert(args, name .. ': ' .. value)
+  end
+  table.insert(args, url)
+
+  if vim.system then
+    vim.system(args, { text = true }, function(res)
+      vim.schedule(function()
+        if res.code ~= 0 then
+          callback(nil, '[NoVim] Failed to fetch page. Check connection.')
+          return
+        end
+        callback(res.stdout, nil)
+      end)
+    end)
+    return
+  end
+
+  -- nvim < 0.10: no vim.system. jobstart with buffered stdout.
+  local out = {}
+  vim.fn.jobstart(args, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      if data then
+        for _, line in ipairs(data) do
+          table.insert(out, line)
+        end
+      end
+    end,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        if code ~= 0 then
+          callback(nil, '[NoVim] Failed to fetch page. Check connection.')
+          return
+        end
+        callback(table.concat(out, '\n'), nil)
+      end)
+    end,
+  })
+end
+
 -- Split `text` on '\n' into a lines table. Shared so adapters that need to
 -- post-process stripped text (e.g. legacy's edit-link removal) before
 -- re-splitting don't each hand-roll the same gmatch loop.
@@ -195,6 +346,56 @@ function M.parse_host(url)
   return url:match('^(https?://[^/]+)') or ''
 end
 
+-- Build a Lua-pattern fragment matching `tag` case-insensitively, e.g.
+-- "div" -> "[Dd][Ii][Vv]". `tag` must be plain ASCII letters (no pattern
+-- magic characters) — true for every tag name find_tag_close is called
+-- with (div, article, ...).
+local function case_insensitive_tag_pattern(tag)
+  local out = {}
+  for i = 1, #tag do
+    local c = tag:sub(i, i)
+    table.insert(out, '[' .. c:upper() .. c:lower() .. ']')
+  end
+  return table.concat(out)
+end
+
+-- Depth-aware walk that finds the byte offset of the '<' that begins the
+-- closing </tag> matching the tag whose opening tag ends at `start_pos`
+-- (i.e. `start_pos` is the byte right after that opening tag's '>').
+-- Nested <tag>...</tag> pairs are tracked so a tag nested inside the one
+-- we're bounding doesn't terminate the scan early. Returns nil if no
+-- matching close is found (malformed/truncated HTML) — callers should
+-- fall back to a secondary terminator in that case rather than treating
+-- the rest of the document as in-scope.
+--
+-- Generalised from a div-only helper that used to live in
+-- sites/czbooks.lua, so article-scoped adapters (e.g. ixdzs) can reuse it
+-- without duplicating the depth-tracking logic.
+function M.find_tag_close(html, tag, start_pos)
+  local tag_pat = case_insensitive_tag_pattern(tag)
+  local depth = 1
+  local pos = start_pos
+  local len = #html
+  while pos <= len do
+    local open_s, open_e = html:find('<%s*' .. tag_pat .. '[%s>]', pos)
+    local close_s, close_e = html:find('<%s*/%s*' .. tag_pat .. '%s*>', pos)
+    if not close_s then
+      return nil
+    end
+    if open_s and open_s < close_s then
+      depth = depth + 1
+      pos = open_e + 1
+    else
+      depth = depth - 1
+      if depth == 0 then
+        return close_s
+      end
+      pos = close_e + 1
+    end
+  end
+  return nil
+end
+
 -- Make a relative or protocol-relative href absolute using the source
 -- URL's scheme + host (e.g. "https://example.com").
 function M.make_absolute(href, host)
@@ -226,7 +427,7 @@ function M.fetch_toc(source_url)
   local adapter = sites.resolve(source_url)
   local index_url = adapter.normalise_url(source_url)
 
-  local html, err = M.http_get(index_url)
+  local html, err = adapter.fetch_toc_html(index_url)
   if not html then return nil, err end
 
   return adapter.parse_toc(html, index_url)
