@@ -85,6 +85,66 @@ local function setup_autosave(buf, url, title)
   })
 end
 
+-- Selects which reader buffers to wipe after a chapter swap. Pure over a
+-- description of the open buffers (mirroring M.resolve_autosave_line's
+-- testability convention above) so it can be unit-tested without a live
+-- reader window. Each entry: { buf, is_reader, has_window }. A buffer is
+-- selected only when it is a reader buffer, is not shown in any window, and
+-- is not the buffer just swapped onto -- see dispose_stale_buffers below for
+-- how this turns into real nvim_buf_delete calls.
+function M.buffers_to_dispose(current_buf, buf_infos)
+  local stale = {}
+  for _, info in ipairs(buf_infos) do
+    if info.is_reader and not info.has_window and info.buf ~= current_buf then
+      table.insert(stale, info.buf)
+    end
+  end
+  return stale
+end
+
+-- Live wrapper around M.buffers_to_dispose: builds buf_infos from the real
+-- editor state and wipes whatever it selects. Reader buffers are identified
+-- by filetype == 'novim' (set by M.open itself below), not by bufname,
+-- since the novim:// prefix is adapter-owned. Uses nvim_buf_delete (bwipeout
+-- semantics) rather than a plain delete because bwipeout also frees the
+-- buffer NAME -- a non-wiping delete would leave the name claimed, so the
+-- bufnr-by-name lookup in M.open would later find the husk and reuse it
+-- without ever re-running setup_reader_keymaps/setup_autosave, silently
+-- breaking ]c/[c and progress saving on that chapter.
+local function dispose_stale_buffers(current_buf)
+  local windowed = {}
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    windowed[vim.api.nvim_win_get_buf(win)] = true
+  end
+
+  local buf_infos = {}
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(b) then
+      table.insert(buf_infos, {
+        buf = b,
+        is_reader = vim.bo[b].filetype == 'novim',
+        has_window = windowed[b] == true,
+      })
+    end
+  end
+
+  -- Each delete is pcall-wrapped per buffer, rather than wrapping the whole
+  -- loop, so one bad buffer (an E937-style error, or a third-party autocmd
+  -- reacting badly to BufDelete) can't stop the rest of the sweep. This
+  -- runs after the new chapter's content is already swapped into the
+  -- window and visible (see the comment above the call site in M.open), so
+  -- a throwing delete must never propagate out of here -- doing so would
+  -- skip the word-wrap options, sidebar.refresh_highlight(), and the
+  -- "Loaded" notify that still need to run: cleanup must never take down a
+  -- read that has already succeeded.
+  for _, buf in ipairs(M.buffers_to_dispose(current_buf, buf_infos)) do
+    local ok, err = pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    if not ok then
+      vim.notify('[NoVim] Failed to clean up a stale reader buffer: ' .. tostring(err), vim.log.levels.WARN)
+    end
+  end
+end
+
 function M.open(url)
   local fetcher = require('novim.fetcher')
   local sites = require('novim.sites')
@@ -134,6 +194,12 @@ function M.open(url)
     win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(win, buf)
   end
+
+  -- Runs after the swap above (so BufLeave already fired the outgoing
+  -- buffer's autosave) and after the fetch-error early return near the top
+  -- of this function (so a failed fetch wipes nothing). See
+  -- dispose_stale_buffers for what qualifies as stale.
+  dispose_stale_buffers(buf)
 
   if config.options.word_wrap then
     vim.wo[win].wrap = true

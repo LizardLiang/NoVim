@@ -790,6 +790,53 @@ do
 end
 
 ----------------------------------------------------------------------
+-- reader.buffers_to_dispose (dispose stale reader buffers on chapter
+-- switch): pure decision function that selects which reader buffers to
+-- wipe after M.open swaps to a new chapter. Never the current buffer,
+-- never a windowed buffer, never a non-reader buffer.
+----------------------------------------------------------------------
+
+do
+  local stale = reader.buffers_to_dispose(5, {
+    { buf = 5, is_reader = true, has_window = false },
+  })
+  eq(#stale, 0, 'buffers_to_dispose excludes the current chapter\'s buffer')
+end
+
+do
+  local stale = reader.buffers_to_dispose(5, {
+    { buf = 3, is_reader = true, has_window = true },
+  })
+  eq(#stale, 0, 'buffers_to_dispose excludes a reader buffer displayed in a window, e.g. a deliberate vsplit')
+end
+
+do
+  local stale = reader.buffers_to_dispose(5, {
+    { buf = 3, is_reader = false, has_window = false },
+  })
+  eq(#stale, 0, 'buffers_to_dispose never selects a non-reader buffer')
+end
+
+do
+  local stale = reader.buffers_to_dispose(5, {
+    { buf = 1, is_reader = true, has_window = false },
+    { buf = 2, is_reader = true, has_window = false },
+    { buf = 3, is_reader = false, has_window = false },
+    { buf = 4, is_reader = true, has_window = true },
+    { buf = 5, is_reader = true, has_window = false },
+  })
+  table.sort(stale)
+  eq(#stale, 2, 'buffers_to_dispose selects every stale windowless reader buffer')
+  eq(stale[1], 1, 'buffers_to_dispose includes stale reader buffer 1')
+  eq(stale[2], 2, 'buffers_to_dispose includes stale reader buffer 2')
+end
+
+do
+  local stale = reader.buffers_to_dispose(5, {})
+  eq(#stale, 0, 'buffers_to_dispose returns an empty list when there are no open buffers to consider')
+end
+
+----------------------------------------------------------------------
 -- progress.lua: list() / remove() / save(title) -- the data layer behind
 -- lua/novim/library.lua (tactical plan Phase 2).
 ----------------------------------------------------------------------
