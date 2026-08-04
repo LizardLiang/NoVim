@@ -50,6 +50,12 @@ function M.entry_chapter(_)
   return nil
 end
 
+-- The fallback adapter claims arbitrary sites and knows nothing site-specific
+-- about their URLs -- always fetch exactly what the user supplied.
+function M.canonical_url(url)
+  return url
+end
+
 -- No site of its own -- no generic element reliably names the novel across
 -- every arbitrary site this fallback might match. Scheduled (rather than
 -- calling back synchronously) so the contract's "always async" guarantee

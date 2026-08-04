@@ -51,6 +51,11 @@ function M.novel_key(url)
   return 'czbooks.net/' .. (novel_id or url)
 end
 
+-- czbooks chapter URLs are fetchable exactly as written -- no rewrite needed.
+function M.canonical_url(url)
+  return url
+end
+
 -- The full TOC is reachable by a plain GET of the index page, unlike
 -- ixdzs -- no special fetch needed.
 M.fetch_toc_html = fetcher.http_get

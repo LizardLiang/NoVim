@@ -4,6 +4,19 @@
 --   normalise_url(url)            -> index URL to fetch the TOC from
 --   novel_key(url)                -> stable per-novel key for progress storage
 --   entry_chapter(url)            -> chapter id if `url` names a chapter, else nil
+--   canonical_url(url)            -> url — rewrite a chapter URL to the form
+--                                     that can actually be fetched. Applied by
+--                                     fetcher.fetch_chapter at the single point
+--                                     a chapter page is requested, because the
+--                                     entry-chapter path (sidebar.load_toc)
+--                                     opens the raw user-pasted URL. Needed by
+--                                     any site reachable through hosts that
+--                                     serve no readable content of their own
+--                                     (novel543's redirect shims return a bare
+--                                     JS stub), and by sites whose chapters are
+--                                     split across pages, so every chapter is
+--                                     entered at its first page. Adapters that
+--                                     need no rewrite return `url` unchanged.
 --   fetch_toc_html(index_url)     -> html, err — how the TOC page is retrieved.
 --                                     Most adapters just GET index_url; an
 --                                     adapter whose full chapter list isn't
@@ -13,6 +26,15 @@
 --                                     fetcher.lua.
 --   parse_toc(html, url)          -> nodes, err
 --   parse_chapter(html, url)      -> lines, prev_url, next_url, title, err
+--                                     Normally a pure parse of the html the
+--                                     caller already fetched. An adapter for a
+--                                     site that splits one chapter across
+--                                     several pages (novel543) may additionally
+--                                     fetch the follow-on pages here and
+--                                     concatenate them, so the reader shows a
+--                                     whole chapter; fetcher.fetch_chapter is
+--                                     synchronous, so blocking fetches in that
+--                                     path are safe.
 --   bufname(url)                  -> buffer name string
 --   statusline(url, title)        -> statusline label string
 --   label(url)                    -> human-readable resume-prompt label string
@@ -56,6 +78,7 @@ local M = {}
 M.adapters = {
   require('novim.sites.czbooks'),
   require('novim.sites.ixdzs'),
+  require('novim.sites.novel543'),
   require('novim.sites.legacy'),
 }
 

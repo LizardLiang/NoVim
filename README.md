@@ -34,6 +34,13 @@ Read web novels inside Neovim.
 - [ixdzs.tw](https://ixdzs.tw) (and mirrors, e.g. ixdzs.com) — long flat
   chapter lists (no synthetic volume grouping); use the sidebar's `c` key
   to jump straight to a chapter number instead of scrolling
+- [novel543.com](https://www.novel543.com) — chapters that the site splits
+  across pages are stitched back into one buffer, so `]c` moves a whole
+  chapter at a time. Redirect-shim URLs (`look.thisiscm.com`,
+  `look.twword.com`) reuse novel543's paths and are accepted as-is; NoVim
+  rewrites them to the canonical host. This source is excluded from
+  `:NoVimSearch` — its search endpoint sits behind an interactive
+  Cloudflare challenge that NoVim's HTTP client cannot pass
 - Any other site whose pages follow the generic `#sidebar` / `#content_wrapper` /
   `#article` layout NoVim originally targeted (handled by the fallback adapter)
 

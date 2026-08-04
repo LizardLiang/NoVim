@@ -62,6 +62,12 @@ function M.novel_key(url)
   return 'ixdzs/' .. (bid or url)
 end
 
+-- ixdzs chapter URLs are fetchable exactly as written, on every mirror -- no
+-- rewrite needed (and rewriting would defeat mirror support).
+function M.canonical_url(url)
+  return url
+end
+
 -- The index page itself only renders the most recent handful of chapters
 -- (JS-filled beyond that); the full chapter list lives behind a POST.
 function M.fetch_toc_html(index_url)
@@ -102,14 +108,8 @@ function M.parse_toc(html, url)
   return nodes, nil
 end
 
--- Find the byte offset of the nearest '<' at or before `upto` -- used to
--- back up from an attribute match to the start of its owning tag.
-local function nearest_tag_start(html, upto)
-  for i = upto, 1, -1 do
-    if html:sub(i, i) == '<' then return i end
-  end
-  return nil
-end
+-- Shared with sites/novel543.lua; the implementations now live in fetcher.
+local nearest_tag_start = fetcher.nearest_tag_start
 
 -- The chapter title (h1.page-d-name) sits OUTSIDE article.page-content,
 -- so it's searched across the whole document rather than the scoped
@@ -146,51 +146,8 @@ local function article_container(html)
   return html:sub(tag_close + 1)
 end
 
--- Every well-formed <script>...</script> block. (strip_html_lines would
--- also catch this, but the required strip order puts it first.)
-local function strip_scripts(html)
-  return (html:gsub('<[Ss][Cc][Rr][Ii][Pp][Tt][^>]*>.-</%s*[Ss][Cc][Rr][Ii][Pp][Tt]%s*>', ''))
-end
-
--- Remove every element (any tag name) whose opening tag matches
--- `attr_pattern`, scanning depth-aware via find_tag_close so a matched
--- element that itself nests other tags of the same name (e.g. a
--- div[id^="bg-ssp"] containing another div) is removed as a whole unit.
-local function strip_elements(html, attr_pattern)
-  local out = {}
-  local pos = 1
-  while true do
-    local tag_start, tag_close
-    local search_pos = pos
-    while true do
-      local s = html:find('<%a', search_pos)
-      if not s then break end
-      local e = html:find('>', s, true)
-      if not e then break end
-      if html:sub(s, e):match(attr_pattern) then
-        tag_start, tag_close = s, e
-        break
-      end
-      search_pos = e + 1
-    end
-
-    if not tag_start then
-      table.insert(out, html:sub(pos))
-      break
-    end
-
-    table.insert(out, html:sub(pos, tag_start - 1))
-    local tag_name = html:sub(tag_start + 1, tag_close - 1):match('^(%a+)')
-    local close_pos = tag_name and fetcher.find_tag_close(html, tag_name, tag_close + 1)
-    if close_pos then
-      local close_end = html:find('>', close_pos, true)
-      pos = close_end and (close_end + 1) or (tag_close + 1)
-    else
-      pos = tag_close + 1
-    end
-  end
-  return table.concat(out)
-end
+local strip_scripts = fetcher.strip_scripts
+local strip_elements = fetcher.strip_elements
 
 -- The article opens with an <h3> duplicating h1.page-d-name's text on
 -- some pages; strip it when its text matches the already-extracted title

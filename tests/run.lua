@@ -241,6 +241,249 @@ do
 end
 
 ----------------------------------------------------------------------
+-- novel543 adapter
+----------------------------------------------------------------------
+local novel543 = require('novim.sites.novel543')
+local novel543_fetcher = require('novim.fetcher')
+
+local CANON_CH1 = 'https://www.novel543.com/0618626633/8096_1.html'
+
+-- Swap fetcher.http_get for `stub` while `fn` runs, so the page walk in
+-- parse_chapter can be exercised with fixtures and zero network access.
+local function with_http_get(stub, fn)
+  local saved = novel543_fetcher.http_get
+  novel543_fetcher.http_get = stub
+  local ok, err = pcall(fn)
+  novel543_fetcher.http_get = saved
+  if not ok then error(err) end
+end
+
+do
+  truthy(novel543.match('https://www.novel543.com/0618626633/'),
+    'novel543 adapter matches the canonical host')
+  truthy(novel543.match('https://novel543.com/0618626633/'),
+    'novel543 adapter matches the bare apex host')
+  truthy(novel543.match('https://look.thisiscm.com/0618626633/8096_1.html'),
+    'novel543 adapter claims the thisiscm redirect shim')
+  truthy(novel543.match('https://look.twword.com/shelf/list/'),
+    'novel543 adapter claims the twword redirect shim')
+  truthy(not novel543.match('https://example.com/book/ch/'),
+    'novel543 adapter does not match unrelated hosts')
+  truthy(not novel543.match('https://notnovel543.com/0618626633/'),
+    'novel543 adapter does not match a host merely ending in the domain text')
+
+  -- canonical_url: shim hosts serve only a JS stub, and a later-page URL
+  -- must fold back to the chapter's first page.
+  eq(novel543.canonical_url('https://look.thisiscm.com/0618626633/8096_1.html'), CANON_CH1,
+    'canonical_url rewrites a shim chapter URL onto the canonical host')
+  eq(novel543.canonical_url(CANON_CH1), CANON_CH1,
+    'canonical_url leaves an already-canonical chapter URL unchanged')
+  eq(novel543.canonical_url('https://www.novel543.com/0618626633/8096_1_2.html'), CANON_CH1,
+    'canonical_url folds a later-page URL back to the chapter first page')
+  eq(novel543.canonical_url('https://look.twword.com/0618626633/'),
+    'https://www.novel543.com/0618626633/',
+    'canonical_url rewrites a shim index URL onto the canonical host')
+
+  eq(novel543.normalise_url('https://look.thisiscm.com/0618626633/8096_1.html'),
+    'https://www.novel543.com/0618626633/',
+    'novel543 normalise_url returns the canonical index URL for a shim chapter URL')
+  eq(novel543.normalise_url('https://www.novel543.com/0618626633/'),
+    'https://www.novel543.com/0618626633/',
+    'novel543 normalise_url is idempotent on an index URL')
+
+  eq(novel543.entry_chapter(CANON_CH1), '8096_1',
+    'novel543 entry_chapter reports the chapter id for a chapter URL')
+  eq(novel543.entry_chapter('https://www.novel543.com/0618626633/8096_1_2.html'), '8096_1',
+    'novel543 entry_chapter reports the owning chapter for a later-page URL')
+  is_nil(novel543.entry_chapter('https://www.novel543.com/0618626633/'),
+    'novel543 entry_chapter is nil for an index URL')
+
+  eq(novel543.novel_key('https://look.thisiscm.com/0618626633/8096_1.html'),
+    novel543.novel_key(CANON_CH1),
+    'novel543 progress key is identical for shim and canonical URLs')
+
+  eq(novel543.bufname(CANON_CH1), 'novim://0618626633/8096_1',
+    'novel543 bufname names the novel and chapter')
+  eq(novel543.label(CANON_CH1), '0618626633/8096_1',
+    'novel543 label strips the novim:// prefix')
+  eq(novel543.statusline(CANON_CH1, 'Placeholder Chapter One'), 'Placeholder Chapter One',
+    'novel543 statusline shows the adapter-supplied title')
+
+  truthy(novel543.searchable == false,
+    'novel543 adapter is declared non-searchable (Cloudflare-challenged search path)')
+end
+
+-- The full chapter list lives on the sibling /dir page, not the index.
+do
+  local requested
+  with_http_get(function(url)
+    requested = url
+    return '<html></html>', nil
+  end, function()
+    novel543.fetch_toc_html('https://www.novel543.com/0618626633/')
+  end)
+  eq(requested, 'https://www.novel543.com/0618626633/dir',
+    'novel543 fetch_toc_html requests the /dir page')
+end
+
+do
+  local toc_html = read_fixture('novel543_toc.html')
+  local nodes, err = novel543.parse_toc(toc_html, 'https://www.novel543.com/0618626633/')
+  is_nil(err, 'novel543 parse_toc returns no error for a chapter list page')
+  eq(nodes and #nodes, 3, 'novel543 parse_toc returns one node per chapter row')
+  eq(nodes and nodes[1].title, 'Placeholder Chapter One',
+    'novel543 parse_toc keeps served order and reads the row title')
+  eq(nodes and nodes[1].url, CANON_CH1,
+    'novel543 parse_toc resolves chapter hrefs against the canonical host')
+  truthy(nodes and nodes[1].is_leaf, 'novel543 parse_toc marks chapter rows as leaves')
+
+  eq(nodes and nodes[#nodes].title, 'Placeholder Chapter Three',
+    'novel543 parse_toc ends on the last chapter of the full list')
+
+  -- The page's own navigation is <li><a> too; only chapter rows may survive.
+  for _, node in ipairs(nodes or {}) do
+    truthy(not node.title:match('NAVBAR_MARKER'),
+      'novel543 parse_toc filters out navigation rows')
+  end
+
+  -- The dir page also carries a short descending "latest chapters" preview
+  -- above the full list. Scanning the whole document would parse those rows
+  -- as extra chapters (a live capture gave 1151 rows for 1139 chapters).
+  local seen = {}
+  for _, node in ipairs(nodes or {}) do
+    truthy(not node.title:match('PREVIEW_ROW'),
+      'novel543 parse_toc ignores the latest-chapters preview list')
+    truthy(not seen[node.url], 'novel543 parse_toc emits no duplicate chapter rows')
+    seen[node.url] = true
+  end
+
+  local empty, empty_err = novel543.parse_toc('<html><body></body></html>',
+    'https://www.novel543.com/0618626633/')
+  is_nil(empty, 'novel543 parse_toc returns no nodes for a page with no chapter rows')
+  truthy(empty_err, 'novel543 parse_toc reports an error for a page with no chapter rows')
+end
+
+-- Single-page chapter: nextUrl already points at another chapter, so the
+-- page walk must not issue any request at all.
+do
+  local single = read_fixture('novel543_chapter_single.html')
+  local fetched = 0
+  local lines, prev_url, next_url, title
+  with_http_get(function(url)
+    fetched = fetched + 1
+    return nil, 'unexpected fetch: ' .. url
+  end, function()
+    lines, prev_url, next_url, title = novel543.parse_chapter(single,
+      'https://www.novel543.com/0618626633/8096_2.html')
+  end)
+
+  eq(fetched, 0, 'novel543 parse_chapter issues no extra request for a single-page chapter')
+  eq(title, 'Placeholder Chapter Two', 'novel543 parse_chapter reads the chapter title')
+  eq(next_url, 'https://www.novel543.com/0618626633/8096_3.html',
+    'novel543 parse_chapter resolves the next chapter link from var nextUrl')
+  eq(prev_url, CANON_CH1,
+    'novel543 parse_chapter resolves the previous chapter link from var prevUrl')
+  truthy(table.concat(lines, '\n'):find('PLACEHOLDER_SINGLE_PARA_ONE', 1, true),
+    'novel543 parse_chapter returns the chapter body')
+end
+
+-- Two-page chapter: the pages are stitched into one continuous chapter.
+do
+  local p1 = read_fixture('novel543_chapter_p1.html')
+  local p2 = read_fixture('novel543_chapter_p2.html')
+  local requested = {}
+  local lines, prev_url, next_url, title
+  with_http_get(function(url)
+    table.insert(requested, url)
+    if url == 'https://www.novel543.com/0618626633/8096_1_2.html' then return p2, nil end
+    return nil, '[NoVim] unexpected fetch: ' .. url
+  end, function()
+    lines, prev_url, next_url, title = novel543.parse_chapter(p1, CANON_CH1)
+  end)
+
+  local text = table.concat(lines, '\n')
+
+  eq(#requested, 1, 'novel543 parse_chapter fetches exactly the one follow-on page')
+  eq(title, 'Placeholder Chapter One',
+    'novel543 parse_chapter strips the trailing page counter from the title')
+
+  truthy(text:find('PLACEHOLDER_P1_PARA_ONE', 1, true),
+    'stitched chapter keeps the first page body')
+  truthy(text:find('PLACEHOLDER_P2_PARA_ONE', 1, true),
+    'stitched chapter appends the second page body')
+  truthy(text:find('PLACEHOLDER_P1_PARA_THREE', 1, true)
+    < text:find('PLACEHOLDER_P2_PARA_ONE', 1, true),
+    'stitched chapter keeps the pages in page order')
+
+  -- Regression guard for the bug class of d34ed12 (nav leaking into content)
+  -- and 1525dbd (title extraction): neither ads, scripts, nav, nor the page's
+  -- own heading may reach the reader.
+  not_contains(text, 'GADBLOCK_MARKER_TEXT', 'stitched chapter strips div.gadBlock')
+  not_contains(text, 'ADBLOCK_MARKER_TEXT', 'stitched chapter strips div.adBlock')
+  not_contains(text, 'ADBLOCK_P2_MARKER_TEXT', 'stitched chapter strips ads on follow-on pages')
+  not_contains(text, 'GAD_MARKER', 'stitched chapter strips scripts nested in ad blocks')
+  not_contains(text, 'AD_MARKER', 'stitched chapter strips scripts nested in ad blocks')
+  not_contains(text, 'HOME_NAV_MARKER', 'stitched chapter strips the breadcrumb navigation')
+  not_contains(text, 'NEXT_BTN_MARKER', 'stitched chapter strips the footer nav buttons')
+  not_contains(text, 'Placeholder Chapter One',
+    'stitched chapter does not repeat the heading as a body line')
+
+  eq(next_url, 'https://www.novel543.com/0618626633/8096_2.html',
+    'stitched chapter takes its next link from the final page')
+  is_nil(prev_url,
+    'chapter 1 reports no previous link when var prevUrl points at its own URL')
+end
+
+-- A follow-on page that cannot be fetched truncates the chapter but never
+-- discards the pages already read.
+do
+  local p1 = read_fixture('novel543_chapter_p1.html')
+  local lines
+  with_http_get(function(_url)
+    return nil, '[NoVim] Failed to fetch page. Check connection.'
+  end, function()
+    lines = novel543.parse_chapter(p1, CANON_CH1)
+  end)
+
+  local text = table.concat(lines, '\n')
+  truthy(text:find('PLACEHOLDER_P1_PARA_ONE', 1, true),
+    'a failed follow-on page keeps the pages already fetched')
+  truthy(text:find('Failed to fetch page', 1, true),
+    'a failed follow-on page reports the truncation in-buffer')
+end
+
+-- The novel title comes from the index page's h1.title, never from /dir
+-- (whose heading carries a chapter-list suffix).
+do
+  local index_html = read_fixture('novel543_novel_index.html')
+  local saved = novel543_fetcher.http_get_async
+  local requested, got_title
+  novel543_fetcher.http_get_async = function(url, _headers, cb)
+    requested = url
+    cb(index_html, nil)
+  end
+  novel543.fetch_novel_title('https://www.novel543.com/0618626633/', function(title)
+    got_title = title
+  end)
+  novel543_fetcher.http_get_async = saved
+
+  eq(requested, 'https://www.novel543.com/0618626633/',
+    'novel543 fetch_novel_title reads the index page, not /dir')
+  eq(got_title, 'Placeholder Novel Title',
+    'novel543 fetch_novel_title returns the clean novel title')
+
+  -- The /dir page heading must not be accepted as the novel title.
+  local toc_html = read_fixture('novel543_toc.html')
+  local dir_title = 'unset'
+  novel543_fetcher.http_get_async = function(_url, _headers, cb) cb(toc_html, nil) end
+  novel543.fetch_novel_title('https://www.novel543.com/0618626633/dir', function(title)
+    dir_title = title
+  end)
+  novel543_fetcher.http_get_async = saved
+  is_nil(dir_title, 'novel543 fetch_novel_title rejects the /dir heading')
+end
+
+----------------------------------------------------------------------
 -- adapter registry
 ----------------------------------------------------------------------
 local sites = require('novim.sites')
@@ -251,6 +494,29 @@ do
 
   local fallback = sites.resolve('https://example.com/book/ch/index.html')
   truthy(fallback == legacy, 'sites.resolve falls back to the legacy adapter for unclaimed hosts')
+
+  truthy(sites.resolve(CANON_CH1) == novel543,
+    'sites.resolve returns the novel543 adapter for a novel543 URL')
+  truthy(sites.resolve('https://look.thisiscm.com/0618626633/8096_1.html') == novel543,
+    'sites.resolve returns the novel543 adapter for a claimed shim URL, not legacy')
+
+  -- canonical_url is a required contract method: every adapter implements it,
+  -- and the ones needing no rewrite are pass-throughs.
+  for _, adapter_case in ipairs({
+    { czbooks, 'https://czbooks.net/n/ui5on5/ui85on' },
+    { require('novim.sites.ixdzs'), 'https://ixdzs.tw/read/123456/p7.html' },
+    { legacy, 'https://example.com/book/ch/chapter060/43.html' },
+  }) do
+    eq(adapter_case[1].canonical_url(adapter_case[2]), adapter_case[2],
+      'canonical_url is an identity pass-through for ' .. adapter_case[2])
+  end
+
+  local searchable = sites.searchable()
+  for _, adapter_entry in ipairs(searchable) do
+    truthy(adapter_entry ~= novel543,
+      'sites.searchable() excludes the non-searchable novel543 adapter')
+  end
+  eq(#searchable, 2, 'sites.searchable() still returns exactly czbooks and ixdzs')
 end
 
 ----------------------------------------------------------------------

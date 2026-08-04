@@ -396,6 +396,64 @@ function M.find_tag_close(html, tag, start_pos)
   return nil
 end
 
+-- Find the byte offset of the nearest '<' at or before `upto` -- used to
+-- back up from an attribute match to the start of its owning tag.
+-- Promoted from sites/ixdzs.lua so novel543 can share it.
+function M.nearest_tag_start(html, upto)
+  for i = upto, 1, -1 do
+    if html:sub(i, i) == '<' then return i end
+  end
+  return nil
+end
+
+-- Every well-formed <script>...</script> block. (strip_html_lines would
+-- also catch this, but adapters that strip elements first need it earlier.)
+-- Promoted from sites/ixdzs.lua so novel543 can share it.
+function M.strip_scripts(html)
+  return (html:gsub('<[Ss][Cc][Rr][Ii][Pp][Tt][^>]*>.-</%s*[Ss][Cc][Rr][Ii][Pp][Tt]%s*>', ''))
+end
+
+-- Remove every element (any tag name) whose opening tag matches
+-- `attr_pattern`, scanning depth-aware via find_tag_close so a matched
+-- element that itself nests other tags of the same name (e.g. a
+-- div[id^="bg-ssp"] containing another div) is removed as a whole unit.
+-- Promoted from sites/ixdzs.lua so novel543 can share it.
+function M.strip_elements(html, attr_pattern)
+  local out = {}
+  local pos = 1
+  while true do
+    local tag_start, tag_close
+    local search_pos = pos
+    while true do
+      local s = html:find('<%a', search_pos)
+      if not s then break end
+      local e = html:find('>', s, true)
+      if not e then break end
+      if html:sub(s, e):match(attr_pattern) then
+        tag_start, tag_close = s, e
+        break
+      end
+      search_pos = e + 1
+    end
+
+    if not tag_start then
+      table.insert(out, html:sub(pos))
+      break
+    end
+
+    table.insert(out, html:sub(pos, tag_start - 1))
+    local tag_name = html:sub(tag_start + 1, tag_close - 1):match('^(%a+)')
+    local close_pos = tag_name and M.find_tag_close(html, tag_name, tag_close + 1)
+    if close_pos then
+      local close_end = html:find('>', close_pos, true)
+      pos = close_end and (close_end + 1) or (tag_close + 1)
+    else
+      pos = tag_close + 1
+    end
+  end
+  return table.concat(out)
+end
+
 -- Make a relative or protocol-relative href absolute using the source
 -- URL's scheme + host (e.g. "https://example.com").
 function M.make_absolute(href, host)
@@ -413,6 +471,10 @@ end
 function M.fetch_chapter(url)
   local sites = require('novim.sites')
   local adapter = sites.resolve(url)
+
+  -- Correct the URL before it is requested: the entry-chapter path opens the
+  -- raw URL the user pasted, which for some sites is not fetchable as-is.
+  url = adapter.canonical_url(url)
 
   local html, err = M.http_get(url)
   if not html then return nil, nil, nil, nil, err end
